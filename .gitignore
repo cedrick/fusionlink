@@ -5,29 +5,6 @@
 /vendor/
 /node_modules/
 
-# Local secrets — use *.example.php templates
-/config/database.php
-/config/mail.php
-
-# Runtime / generated
-/storage/backups/*
-!/storage/backups/.gitkeep
-/storage/logs/*
-!/storage/logs/.gitkeep
-/public/uploads/receipts/*
-!/public/uploads/receipts/.gitkeep
-/public/uploads/cms/*
-!/public/uploads/cms/.gitkeep
-/public/uploads/payment-methods/*
-!/public/uploads/payment-methods/.gitkeep
-
-# Accidental credential scratch files
-/127.0.0.1,
-/isp_billing_lite_db,
-/isp_billing_lite_user,
-/ispbilling123,
-/utf8mb4,
-
 # Editor / backup junk
 *.bak
 *.swp

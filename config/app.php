@@ -5,5 +5,5 @@ return [
     'base_path' => '/fusionlink',
     'timezone' => 'Asia/Manila',
     // Protects HTTP /cron/billing — used if you call the URL instead of the CLI cron.
-    'billing_cron_token' => 'change-me-before-production',
+    'billing_cron_token' => 'a88e443b183b321c2299bd65a11f09f90cc16d30050994a7',
 ];
