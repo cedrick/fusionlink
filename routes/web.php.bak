@@ -1,0 +1,133 @@
+<?php
+
+// Safety: make sure session exists
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+
+/**
+ * Simple auth guard (NO Auth class needed)
+ */
+$requireLogin = function () {
+    if (empty($_SESSION['user'])) {
+        header('Location: /login');
+        exit;
+    }
+};
+
+// -------------------- PUBLIC ROUTES --------------------
+
+$router->get('/', function () {
+    $controller = new HomeController();
+    $controller->index();
+});
+
+$router->get('/login', function () {
+    $controller = new AuthController();
+    // your project uses loginForm() on GET /login
+    $controller->loginForm();
+});
+
+$router->post('/login', function () {
+    $controller = new AuthController();
+    // your project uses login() on POST /login
+    $controller->login();
+});
+
+$router->get('/logout', function () {
+    // safest logout
+    $_SESSION = [];
+    if (ini_get("session.use_cookies")) {
+        $params = session_get_cookie_params();
+        setcookie(session_name(), '', time() - 42000,
+            $params["path"], $params["domain"],
+            $params["secure"], $params["httponly"]
+        );
+    }
+    session_destroy();
+    header('Location: /login');
+    exit;
+});
+
+$router->get('/users', function () {
+    (new UserController())->index();
+});
+
+// -------------------- PROTECTED ROUTES --------------------
+
+$router->get('/dashboard', function () use ($requireLogin) {
+    $requireLogin();
+
+    View::render('dashboard/index', [
+        'title' => 'Dashboard',
+        'user'  => $_SESSION['user'],
+    ]);
+});
+
+// -------- Customers (protect all) --------
+$router->get('/customers', function () use ($requireLogin) {
+    $requireLogin();
+    (new CustomerController())->index();
+});
+
+// If you already have these methods, you can uncomment later
+// $router->get('/customers/create', function () use ($requireLogin) { $requireLogin(); (new CustomerController())->create(); });
+// $router->post('/customers', function () use ($requireLogin) { $requireLogin(); (new CustomerController())->store(); });
+// $router->get('/customers/edit', function () use ($requireLogin) { $requireLogin(); (new CustomerController())->edit(); });
+// $router->post('/customers/update', function () use ($requireLogin) { $requireLogin(); (new CustomerController())->update(); });
+// $router->get('/customers/delete', function () use ($requireLogin) { $requireLogin(); (new CustomerController())->delete(); });
+
+// -------- Plans (protect) --------
+$router->get('/plans', function () use ($requireLogin) {
+    $requireLogin();
+    (new PlanController())->index();
+});
+
+// -------- Subscriptions (FULL CRUD, protect) --------
+$router->get('/subscriptions', function () use ($requireLogin) {
+    $requireLogin();
+    (new SubscriptionController())->index();
+});
+
+$router->get('/subscriptions/create', function () use ($requireLogin) {
+    $requireLogin();
+    (new SubscriptionController())->create();
+});
+
+$router->post('/subscriptions', function () use ($requireLogin) {
+    $requireLogin();
+    (new SubscriptionController())->store();
+});
+
+$router->get('/subscriptions/edit', function () use ($requireLogin) {
+    $requireLogin();
+    (new SubscriptionController())->edit();
+});
+
+$router->post('/subscriptions/update', function () use ($requireLogin) {
+    $requireLogin();
+    (new SubscriptionController())->update();
+});
+
+$router->get('/subscriptions/delete', function () use ($requireLogin) {
+    $requireLogin();
+    (new SubscriptionController())->delete();
+});
+
+// -------- Week 1 placeholders (avoid 404) --------
+// These will NOT crash; they just show "Coming soon" in your layout
+
+$router->get('/invoices', function () use ($requireLogin) {
+    $requireLogin();
+    View::render('invoices/index', ['title' => 'Invoices']);
+});
+
+$router->get('/payments', function () use ($requireLogin) {
+    $requireLogin();
+    View::render('payments/index', ['title' => 'Payments']);
+});
+
+$router->get('/users', function () use ($requireLogin) {
+    $requireLogin();
+    View::render('users/index', ['title' => 'Users']);
+});

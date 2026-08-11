@@ -1,0 +1,1091 @@
+<?php
+$systemCompanyName = 'ISP-BILLING-LITE';
+
+try {
+    $config = require __DIR__ . '/../../config/database.php';
+
+    $dbName = $config['db'] ?? ($config['name'] ?? null);
+    if ($dbName) {
+        $host = $config['host'] ?? '127.0.0.1';
+        $user = $config['user'] ?? '';
+        $pass = $config['pass'] ?? '';
+        $charset = $config['charset'] ?? 'utf8mb4';
+
+        $dsn = "mysql:host={$host};dbname={$dbName};charset={$charset}";
+
+        $layoutPdo = new PDO($dsn, $user, $pass, [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+        ]);
+
+        $stmt = $layoutPdo->query("
+            SELECT company_name
+            FROM settings
+            ORDER BY id ASC
+            LIMIT 1
+        ");
+        $settingsRow = $stmt->fetch();
+
+        if (!empty($settingsRow['company_name'])) {
+            $systemCompanyName = trim((string)$settingsRow['company_name']);
+        }
+    }
+} catch (Throwable $e) {
+    $systemCompanyName = 'ISP-BILLING-LITE';
+}
+?>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title><?= htmlspecialchars($title ?? $systemCompanyName) ?></title>
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#050505">
+
+<style>
+:root {
+    --bg: #050505;
+    --bg-2: #090909;
+    --bg-3: #0d0d0f;
+    --panel: rgba(255,255,255,0.03);
+    --panel-2: rgba(255,255,255,0.05);
+    --card: #0c0c0d;
+    --card-2: #111113;
+    --card-3: #151518;
+    --text: #fafafa;
+    --muted: #a3a3a3;
+    --muted-2: #737373;
+    --line: rgba(255,255,255,0.08);
+    --line-2: rgba(255,255,255,0.12);
+    --primary: #ffffff;
+    --primary-text: #050505;
+    --sidebar: #030303;
+    --sidebar-2: #070707;
+    --sidebar-3: #0c0c0d;
+    --success-bg: rgba(34,197,94,.12);
+    --success-text: #86efac;
+    --warning-bg: rgba(245,158,11,.12);
+    --warning-text: #fcd34d;
+    --danger-bg: rgba(239,68,68,.12);
+    --danger-text: #fca5a5;
+    --info-bg: rgba(255,255,255,.06);
+    --info-text: #e5e5e5;
+    --shadow-1: 0 10px 30px rgba(0,0,0,.32);
+    --shadow-2: 0 18px 50px rgba(0,0,0,.40);
+    --radius-xl: 28px;
+    --radius-lg: 22px;
+    --radius-md: 16px;
+    --radius-sm: 12px;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html, body {
+    margin: 0;
+    padding: 0;
+    min-height: 100%;
+    font-family: Arial, sans-serif;
+    color: var(--text);
+    background:
+        radial-gradient(circle at top left, rgba(255,255,255,.04), transparent 18%),
+        radial-gradient(circle at bottom right, rgba(255,255,255,.03), transparent 18%),
+        linear-gradient(180deg, #020202 0%, #050505 55%, #090909 100%);
+}
+
+body {
+    overflow-x: hidden;
+}
+
+a {
+    color: inherit;
+}
+
+.app-shell {
+    min-height: 100vh;
+}
+
+.sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 290px;
+    height: 100vh;
+    background: linear-gradient(180deg, var(--sidebar) 0%, var(--sidebar-2) 52%, var(--sidebar-3) 100%);
+    color: #fff;
+    padding: 22px 16px 18px;
+    overflow-y: auto;
+    border-right: 1px solid var(--line);
+    box-shadow: var(--shadow-2);
+    z-index: 1000;
+}
+
+.brand {
+    margin-bottom: 22px;
+    padding: 10px 10px 18px;
+    border-bottom: 1px solid var(--line);
+}
+
+.brand-title {
+    font-size: 20px;
+    font-weight: 900;
+    letter-spacing: .08em;
+    line-height: 1.2;
+    color: #fff;
+    text-transform: uppercase;
+}
+
+.brand-subtitle {
+    margin-top: 8px;
+    font-size: 12px;
+    color: #9ca3af;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+}
+
+.user-panel {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 16px;
+    border-radius: 24px;
+    background: linear-gradient(180deg, rgba(255,255,255,.03), rgba(255,255,255,.015));
+    border: 1px solid rgba(255,255,255,.07);
+    margin-bottom: 22px;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.03);
+}
+
+.user-avatar {
+    width: 52px;
+    height: 52px;
+    border-radius: 18px;
+    background: linear-gradient(135deg, #ffffff 0%, #d4d4d8 100%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 20px;
+    font-weight: 900;
+    color: #000;
+    flex: 0 0 auto;
+}
+
+.user-meta {
+    min-width: 0;
+}
+
+.user-role {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: .14em;
+    color: rgba(255,255,255,.50);
+    margin-bottom: 5px;
+    font-weight: 700;
+}
+
+.user-name {
+    font-size: 14px;
+    font-weight: 700;
+    color: #fff;
+    line-height: 1.35;
+    word-break: break-word;
+}
+
+.side-section {
+    margin-bottom: 22px;
+}
+
+.side-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: .14em;
+    color: rgba(255,255,255,.36);
+    margin: 0 0 10px 10px;
+    font-weight: 700;
+}
+
+.side-links {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.side-links a {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    color: #ededed;
+    text-decoration: none;
+    padding: 14px 15px;
+    border-radius: 18px;
+    background: transparent;
+    transition: .18s ease;
+    font-size: 15px;
+    font-weight: 700;
+    line-height: 1.2;
+    border: 1px solid transparent;
+}
+
+.side-links a:hover {
+    background: rgba(255,255,255,.05);
+    border-color: rgba(255,255,255,.05);
+    transform: translateX(2px);
+}
+
+.side-links a.active {
+    background: linear-gradient(135deg, #ffffff 0%, #ececec 100%);
+    color: #000;
+    box-shadow: 0 10px 24px rgba(255,255,255,.08);
+    border-color: rgba(255,255,255,.20);
+}
+
+.nav-icon {
+    width: 20px;
+    text-align: center;
+    font-size: 17px;
+    line-height: 1;
+    flex: 0 0 20px;
+}
+
+.main {
+    margin-left: 290px;
+    min-height: 100vh;
+    padding: 28px;
+}
+
+.page-card {
+    background: linear-gradient(180deg, rgba(255,255,255,.025) 0%, rgba(255,255,255,.015) 100%);
+    border: 1px solid rgba(255,255,255,.08);
+    border-radius: 32px;
+    padding: 30px;
+    box-shadow: var(--shadow-2);
+    backdrop-filter: blur(10px);
+}
+
+.auth-page {
+    min-height: 100vh;
+    background:
+        radial-gradient(circle at top left, rgba(255,255,255,.05), transparent 24%),
+        radial-gradient(circle at bottom right, rgba(255,255,255,.03), transparent 22%),
+        linear-gradient(135deg, #020202 0%, #090909 48%, #121214 100%);
+    padding: 40px 20px;
+}
+
+.auth-wrap {
+    max-width: 1180px;
+    margin: 0 auto;
+    min-height: calc(100vh - 80px);
+    display: grid;
+    grid-template-columns: 1.1fr .9fr;
+    gap: 28px;
+    align-items: center;
+}
+
+.auth-brand {
+    color: #fff;
+    padding: 30px 16px 30px 8px;
+}
+
+.auth-kicker {
+    display: inline-block;
+    padding: 8px 14px;
+    border-radius: 999px;
+    background: rgba(255,255,255,.05);
+    border: 1px solid rgba(255,255,255,.08);
+    color: #d4d4d8;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: .10em;
+    text-transform: uppercase;
+    margin-bottom: 18px;
+}
+
+.auth-title {
+    margin: 0 0 14px;
+    font-size: 54px;
+    line-height: 1.05;
+    font-weight: 900;
+    letter-spacing: -.03em;
+}
+
+.auth-text {
+    margin: 0 0 22px;
+    font-size: 18px;
+    line-height: 1.7;
+    color: rgba(255,255,255,.72);
+    max-width: 560px;
+}
+
+.auth-list {
+    display: grid;
+    gap: 12px;
+    margin-top: 18px;
+}
+
+.auth-list-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    color: rgba(255,255,255,.88);
+    font-size: 15px;
+    font-weight: 600;
+}
+
+.auth-list-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 999px;
+    background: linear-gradient(135deg, #ffffff, #a1a1aa);
+    box-shadow: 0 0 0 5px rgba(255,255,255,.05);
+    flex: 0 0 auto;
+}
+
+.auth-card {
+    background: rgba(12,12,13,.95);
+    border-radius: 30px;
+    padding: 34px 30px;
+    box-shadow: var(--shadow-2);
+    border: 1px solid rgba(255,255,255,.08);
+    color: var(--text);
+}
+
+h1 {
+    margin: 0 0 14px;
+    font-size: 34px;
+    font-weight: 900;
+    color: #fff;
+    letter-spacing: -.02em;
+}
+
+h2, h3 {
+    color: #fff;
+}
+
+p {
+    margin: 0;
+}
+
+.page-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin: 16px 0 20px;
+}
+
+.btn,
+.btn:visited,
+button.btn,
+input.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    text-decoration: none;
+    border: 1px solid rgba(255,255,255,.14);
+    border-radius: 16px;
+    padding: 12px 18px;
+    min-height: 46px;
+    font-size: 14px;
+    cursor: pointer;
+    background: linear-gradient(180deg, #ffffff 0%, #ededed 100%);
+    color: #050505 !important;
+    font-weight: 800;
+    transition: .18s ease;
+    box-shadow: 0 10px 24px rgba(0,0,0,.22);
+    appearance: none;
+    -webkit-appearance: none;
+}
+
+.btn:hover,
+button.btn:hover,
+input.btn:hover {
+    transform: translateY(-1px);
+    opacity: .97;
+}
+
+.btn-secondary,
+.btn-secondary:visited,
+button.btn-secondary,
+input.btn-secondary {
+    background: linear-gradient(180deg, #1d1d20 0%, #111113 100%);
+    color: #ffffff !important;
+    border-color: rgba(255,255,255,.14);
+    box-shadow: 0 10px 24px rgba(0,0,0,.28), inset 0 1px 0 rgba(255,255,255,.05);
+}
+
+.btn-secondary:hover,
+button.btn-secondary:hover,
+input.btn-secondary:hover {
+    background: linear-gradient(180deg, #242428 0%, #161619 100%);
+    color: #ffffff !important;
+}
+
+.btn-danger,
+.btn-danger:visited,
+button.btn-danger,
+input.btn-danger {
+    background: linear-gradient(180deg, #dc2626 0%, #b91c1c 100%);
+    color: #fff !important;
+    border-color: rgba(239,68,68,.20);
+}
+
+.btn-success,
+.btn-success:visited,
+button.btn-success,
+input.btn-success {
+    background: linear-gradient(180deg, #16a34a 0%, #166534 100%);
+    color: #fff !important;
+    border-color: rgba(34,197,94,.18);
+}
+
+.btn-small {
+    padding: 8px 12px;
+    min-height: 38px;
+    font-size: 13px;
+    border-radius: 12px;
+}
+
+.table-wrap {
+    width: 100%;
+    overflow-x: auto;
+    border: 1px solid rgba(255,255,255,.08);
+    border-radius: 22px;
+    background: rgba(255,255,255,.02);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.02);
+}
+
+.table {
+    width: 100%;
+    border-collapse: collapse;
+    min-width: 720px;
+}
+
+.table th,
+.table td {
+    padding: 16px 14px;
+    border-bottom: 1px solid rgba(255,255,255,.07);
+    text-align: left;
+    vertical-align: middle;
+    color: #f5f5f5;
+}
+
+.table th {
+    background: rgba(255,255,255,.03);
+    font-size: 14px;
+    font-weight: 800;
+}
+
+.table td {
+    background: transparent;
+}
+
+.table tr:last-child td {
+    border-bottom: 0;
+}
+
+.table .actions {
+    white-space: nowrap;
+}
+
+.badge {
+    display: inline-block;
+    padding: 7px 12px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: .02em;
+    border: 1px solid rgba(255,255,255,.08);
+}
+
+.badge-success {
+    background: var(--success-bg);
+    color: var(--success-text);
+}
+
+.badge-warning {
+    background: var(--warning-bg);
+    color: var(--warning-text);
+}
+
+.badge-danger {
+    background: var(--danger-bg);
+    color: var(--danger-text);
+}
+
+.badge-info {
+    background: var(--info-bg);
+    color: var(--info-text);
+}
+
+.empty-state {
+    padding: 18px;
+    color: var(--muted);
+}
+
+.form-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+}
+
+.form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.form-group.full {
+    grid-column: 1 / -1;
+}
+
+label {
+    font-size: 14px;
+    font-weight: 800;
+    color: #f3f4f6;
+}
+
+input,
+select,
+textarea {
+    width: 100%;
+    padding: 13px 14px;
+    border: 1px solid rgba(255,255,255,.10);
+    border-radius: 16px;
+    font-size: 14px;
+    background: rgba(255,255,255,.03);
+    color: #fff;
+    transition: border-color .18s ease, box-shadow .18s ease, background .18s ease;
+}
+
+input::placeholder,
+textarea::placeholder {
+    color: #8a8a8f;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+    outline: none;
+    border-color: rgba(255,255,255,.20);
+    box-shadow: 0 0 0 4px rgba(255,255,255,.05);
+    background: rgba(255,255,255,.05);
+}
+
+select {
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    background-image:
+        linear-gradient(45deg, transparent 50%, rgba(255,255,255,.75) 50%),
+        linear-gradient(135deg, rgba(255,255,255,.75) 50%, transparent 50%);
+    background-position:
+        calc(100% - 18px) calc(50% - 3px),
+        calc(100% - 12px) calc(50% - 3px);
+    background-size: 6px 6px, 6px 6px;
+    background-repeat: no-repeat;
+    padding-right: 34px;
+}
+
+select option {
+    color: #f5f5f5;
+    background: #111113;
+}
+
+textarea {
+    min-height: 110px;
+    resize: vertical;
+}
+
+.alert-error {
+    background: rgba(239,68,68,.10);
+    color: #fecaca;
+    border: 1px solid rgba(239,68,68,.18);
+    border-radius: 14px;
+    padding: 12px 14px;
+    margin-bottom: 14px;
+}
+
+.alert-success {
+    background: rgba(34,197,94,.10);
+    color: #bbf7d0;
+    border: 1px solid rgba(34,197,94,.18);
+    border-radius: 14px;
+    padding: 12px 14px;
+    margin-bottom: 14px;
+}
+
+.inline-form {
+    display: inline-block;
+    margin: 0;
+}
+
+.quick-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 18px;
+    margin-bottom: 22px;
+}
+
+.quick-card {
+    background: rgba(255,255,255,.03);
+    border: 1px solid rgba(255,255,255,.08);
+    border-radius: 22px;
+    padding: 22px;
+    box-shadow: var(--shadow-1);
+}
+
+.quick-card .label {
+    font-size: 14px;
+    color: var(--muted);
+    margin-bottom: 10px;
+    font-weight: 700;
+}
+
+.quick-card .value {
+    font-size: 38px;
+    font-weight: 900;
+    line-height: 1.1;
+    color: #fff;
+}
+
+.mobile-topbar {
+    display: none;
+    background: linear-gradient(180deg, #030303 0%, #0a0a0a 100%);
+    color: #fff;
+    padding: 14px 16px;
+    font-weight: 900;
+    font-size: 18px;
+    letter-spacing: .05em;
+    text-transform: uppercase;
+    border-bottom: 1px solid var(--line);
+}
+
+.pagination {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    margin-top: 18px;
+}
+
+.pagination a,
+.pagination span {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 42px;
+    min-height: 42px;
+    padding: 0 12px;
+    border-radius: 12px;
+    text-decoration: none;
+    font-weight: 800;
+    border: 1px solid rgba(255,255,255,.10);
+    background: rgba(255,255,255,.03);
+    color: #e5e7eb;
+}
+
+.pagination a:hover {
+    background: rgba(255,255,255,.06);
+}
+
+.pagination .active {
+    background: linear-gradient(180deg, #ffffff 0%, #ececec 100%);
+    color: #000;
+    border-color: rgba(255,255,255,.20);
+}
+
+.toolbar-card,
+.filter-card,
+.table-card,
+.report-card,
+.panel,
+.form-card {
+    background: linear-gradient(180deg, rgba(255,255,255,.04) 0%, rgba(255,255,255,.025) 100%);
+    border: 1px solid rgba(255,255,255,.08);
+    border-radius: 24px;
+    box-shadow: var(--shadow-1);
+    color: #fff;
+}
+
+.toolbar-card,
+.filter-card,
+.table-card,
+.report-card,
+.panel,
+.form-card {
+    padding: 18px;
+}
+
+.toolbar-form {
+    display: grid;
+    gap: 14px;
+}
+
+.toolbar-group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.toolbar-group label {
+    font-size: 14px;
+    font-weight: 800;
+    color: #f3f4f6;
+}
+
+.toolbar-input,
+.toolbar-select {
+    min-height: 48px;
+    padding: 13px 14px;
+    border: 1px solid rgba(255,255,255,.10);
+    border-radius: 16px;
+    font-size: 14px;
+    background: rgba(255,255,255,.03);
+    color: #fff;
+}
+
+.toolbar-input::placeholder {
+    color: #8a8a8f;
+}
+
+.toolbar-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: end;
+}
+
+.table-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 12px;
+}
+
+.table-meta {
+    font-size: 14px;
+    color: var(--muted);
+    font-weight: 700;
+}
+
+.sort-link {
+    color: inherit;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.sort-arrow {
+    font-size: 11px;
+    color: var(--muted);
+}
+
+.toolbar-submit-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: end;
+}
+
+.section-note {
+    font-size: 14px;
+    color: var(--muted);
+    line-height: 1.6;
+}
+
+.metric-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 8px 12px;
+    border-radius: 999px;
+    background: rgba(255,255,255,.05);
+    border: 1px solid rgba(255,255,255,.08);
+    color: #e5e7eb;
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: .02em;
+}
+
+.select-all-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    text-decoration: none;
+    border: 1px solid rgba(255,255,255,.14);
+    border-radius: 14px;
+    padding: 11px 16px;
+    min-height: 44px;
+    font-size: 14px;
+    cursor: pointer;
+    background: linear-gradient(180deg, #1d1d20 0%, #111113 100%);
+    color: #fff;
+    font-weight: 800;
+    transition: .18s ease;
+    box-shadow: 0 10px 24px rgba(0,0,0,.22);
+}
+
+.select-all-btn:hover {
+    transform: translateY(-1px);
+    opacity: .97;
+}
+
+.checkbox-cell {
+    width: 42px;
+    text-align: center;
+}
+
+.checkbox-cell input {
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+    accent-color: #ffffff;
+}
+
+.form-card {
+    padding: 22px;
+}
+
+.form-section-title {
+    margin: 0 0 18px;
+    font-size: 22px;
+    font-weight: 900;
+    color: #fff;
+}
+
+.form-help {
+    color: var(--muted);
+    font-size: 14px;
+    margin-bottom: 18px;
+    line-height: 1.6;
+}
+
+.section-block {
+    margin-top: 18px;
+}
+
+@media (max-width: 980px) {
+    .auth-wrap {
+        grid-template-columns: 1fr;
+        gap: 20px;
+    }
+
+    .auth-brand {
+        padding: 0;
+    }
+
+    .auth-title {
+        font-size: 38px;
+    }
+
+    .auth-text {
+        font-size: 16px;
+    }
+}
+
+@media (max-width: 900px) {
+    .mobile-topbar {
+        display: block;
+    }
+
+    .sidebar {
+        position: static;
+        width: 100%;
+        height: auto;
+        padding: 14px;
+        box-shadow: none;
+    }
+
+    .brand {
+        display: none;
+    }
+
+    .user-panel {
+        margin-bottom: 16px;
+    }
+
+    .side-links {
+        flex-direction: row;
+        flex-wrap: wrap;
+    }
+
+    .side-links a {
+        background: rgba(255,255,255,.04);
+    }
+
+    .main {
+        margin-left: 0;
+        padding: 16px;
+    }
+
+    .page-card {
+        padding: 18px;
+    }
+
+    .form-grid {
+        grid-template-columns: 1fr;
+    }
+
+    h1 {
+        font-size: 28px;
+    }
+}
+
+@media (max-width: 640px) {
+    .auth-page {
+        padding: 18px 12px;
+    }
+
+    .auth-card {
+        padding: 24px 18px;
+        border-radius: 22px;
+    }
+
+    .auth-title {
+        font-size: 30px;
+    }
+}
+
+@media (max-width: 480px) {
+    .main {
+        padding: 12px;
+    }
+
+    .page-card {
+        padding: 16px;
+        border-radius: 24px;
+    }
+
+    h1 {
+        font-size: 24px;
+    }
+
+    .quick-card .value {
+        font-size: 32px;
+    }
+}
+</style>
+</head>
+
+<body>
+
+<?php
+$role = $_SESSION['user']['role'] ?? '';
+$isLoggedIn = !empty($_SESSION['user']);
+$isAdmin = in_array($role, ['ROLE_ADMIN', 'ADMIN', 'admin'], true);
+$isStaff = in_array($role, ['ROLE_ADMIN', 'ROLE_STAFF', 'ADMIN', 'STAFF', 'admin', 'staff'], true);
+$currentPath = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH);
+$isAuthPage = in_array($currentPath, ['/login'], true);
+
+$userEmail = $_SESSION['user']['email'] ?? 'User';
+$userInitial = strtoupper(substr($userEmail, 0, 1));
+
+$isActive = function (array $paths) use ($currentPath): string {
+    foreach ($paths as $path) {
+        if ($currentPath === $path) {
+            return 'active';
+        }
+    }
+    return '';
+};
+?>
+
+<?php if ($isAuthPage || !$isLoggedIn): ?>
+    <div class="auth-page">
+        <div class="auth-wrap">
+            <div class="auth-brand">
+                <div class="auth-kicker">ISP Billing Platform</div>
+                <h1 class="auth-title">Manage billing, customers, and payments in one place.</h1>
+                <p class="auth-text">
+                    <?= htmlspecialchars($systemCompanyName) ?> helps you manage subscribers, generate invoices, verify payments,
+                    and track outstanding balances with a clean and premium workflow.
+                </p>
+
+                <div class="auth-list">
+                    <div class="auth-list-item">
+                        <span class="auth-list-dot"></span>
+                        <span>Customer and subscription management</span>
+                    </div>
+                    <div class="auth-list-item">
+                        <span class="auth-list-dot"></span>
+                        <span>Invoice generation and PDF export</span>
+                    </div>
+                    <div class="auth-list-item">
+                        <span class="auth-list-dot"></span>
+                        <span>Payment verification and email notifications</span>
+                    </div>
+                    <div class="auth-list-item">
+                        <span class="auth-list-dot"></span>
+                        <span>Outstanding and revenue reporting</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="auth-card">
+                <?= $content ?? '' ?>
+            </div>
+        </div>
+    </div>
+<?php else: ?>
+    <div class="mobile-topbar"><?= htmlspecialchars($systemCompanyName) ?></div>
+
+    <div class="app-shell">
+        <aside class="sidebar">
+            <div class="brand">
+                <div class="brand-title"><?= htmlspecialchars($systemCompanyName) ?></div>
+                <div class="brand-subtitle">Billing Management</div>
+            </div>
+
+            <div class="user-panel">
+                <div class="user-avatar"><?= htmlspecialchars($userInitial) ?></div>
+                <div class="user-meta">
+                    <div class="user-role"><?= htmlspecialchars($role ?: 'USER') ?></div>
+                    <div class="user-name"><?= htmlspecialchars($userEmail) ?></div>
+                </div>
+            </div>
+
+            <div class="side-section">
+                <div class="side-label">Navigation</div>
+                <div class="side-links">
+                    <a class="<?= $isActive(['/dashboard']) ?>" href="/dashboard"><span class="nav-icon">🏠</span><span>Dashboard</span></a>
+
+                    <?php if ($isStaff): ?>
+                        <a class="<?= $isActive(['/customers', '/customers/create', '/customers/edit']) ?>" href="/customers"><span class="nav-icon">👥</span><span>Customers</span></a>
+                        <a class="<?= $isActive(['/subscriptions', '/subscriptions/create', '/subscriptions/edit']) ?>" href="/subscriptions"><span class="nav-icon">📡</span><span>Subscriptions</span></a>
+                        <a class="<?= $isActive(['/invoices', '/invoices/create', '/invoices/view', '/invoices/pdf']) ?>" href="/invoices"><span class="nav-icon">🧾</span><span>Invoices</span></a>
+                        <a class="<?= $isActive(['/payments', '/payments/create']) ?>" href="/payments"><span class="nav-icon">💳</span><span>Payments</span></a>
+                        <a class="<?= $isActive(['/inquiries']) ?>" href="/inquiries"><span class="nav-icon">📨</span><span>Inquiries</span></a>
+                    <?php endif; ?>
+
+                    <?php if ($isAdmin): ?>
+                        <a class="<?= $isActive(['/plans', '/plans/create', '/plans/edit']) ?>" href="/plans"><span class="nav-icon">📦</span><span>Plans</span></a>
+                        <a class="<?= $isActive(['/reports/revenue', '/reports/outstanding']) ?>" href="/reports/revenue"><span class="nav-icon">📊</span><span>Reports</span></a>
+                        <a class="<?= $isActive(['/users']) ?>" href="/users"><span class="nav-icon">🛡️</span><span>Users</span></a>
+                        <a class="<?= $isActive(['/activity-logs']) ?>" href="/activity-logs"><span class="nav-icon">📜</span><span>Activity Logs</span></a>
+                        <a class="<?= $isActive(['/settings']) ?>" href="/settings"><span class="nav-icon">⚙️</span><span>Settings</span></a>
+			<a class="<?= $isActive(['/cms', '/cms/dashboard']) ?>" href="/cms/dashboard"><span class="nav-icon">🧩</span><span>CMS Dashboard</span></a>
+                    <?php endif; ?>
+                </div>
+            </div>
+
+            <div class="side-section">
+                <div class="side-label">Account</div>
+                <div class="side-links">
+                    <a href="/logout"><span class="nav-icon">↩️</span><span>Logout</span></a>
+                </div>
+            </div>
+        </aside>
+
+        <main class="main">
+            <div class="page-card">
+                <?= $content ?? '' ?>
+            </div>
+        </main>
+    </div>
+<?php endif; ?>
+
+</body>
+</html>

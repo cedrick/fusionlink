@@ -2,11 +2,6 @@
 .env.*
 !.env.example
 
-/vendor/
 /node_modules/
 
-# Editor / backup junk
-*.bak
-*.swp
-*~
 .DS_Store
