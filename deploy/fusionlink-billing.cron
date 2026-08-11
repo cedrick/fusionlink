@@ -1,0 +1,14 @@
+# FusionLink daily billing automation (Asia/Manila).
+# Prefer: bash deploy/install-billing-cron.sh  (installs into the current user's crontab)
+#
+# Runs at 06:05 every day:
+# - month-end invoice generation + bill emails (on last day of month)
+# - mid-month prorated first bills when applicable
+# - due-date reminders (on the due day, e.g. 8th)
+# - overdue marking + notices (day after due)
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+TZ=Asia/Manila
+
+5 6 * * * fusion /usr/bin/php /media/fusion/FusionHD1/www/html/fusionlink/bin/billing-cron.php all >> /media/fusion/FusionHD1/www/html/fusionlink/storage/logs/billing-cron.log 2>&1

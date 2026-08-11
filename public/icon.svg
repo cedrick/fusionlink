@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <rect width="256" height="256" rx="36" fill="#111827"/>
+  <circle cx="128" cy="96" r="34" fill="#22c55e"/>
+  <path d="M48 178c18-28 48-42 80-42s62 14 80 42" fill="none" stroke="#ffffff" stroke-width="18" stroke-linecap="round"/>
+  <path d="M74 82c16-16 33-24 54-24s38 8 54 24" fill="none" stroke="#60a5fa" stroke-width="12" stroke-linecap="round"/>
+  <path d="M92 58c10-10 22-15 36-15s26 5 36 15" fill="none" stroke="#93c5fd" stroke-width="8" stroke-linecap="round"/>
+  <text x="128" y="228" text-anchor="middle" font-size="28" font-family="Arial, sans-serif" fill="#ffffff">ISP</text>
+</svg>
