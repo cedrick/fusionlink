@@ -229,7 +229,14 @@ function invoices_page_url(int $page, string $search, string $statusFilter, stri
                         </td>
                         <td><?= (int)($inv['id'] ?? 0) ?></td>
                         <td><?= htmlspecialchars($inv['customer_name'] ?? '') ?></td>
-                        <td>₱<?= number_format((float)($inv['amount'] ?? 0), 2) ?></td>
+                        <td>
+                            ₱<?= number_format((float)($inv['amount'] ?? 0), 2) ?>
+                            <?php if ((float)($inv['vat_amount'] ?? 0) > 0): ?>
+                                <div class="helper-text" style="margin:2px 0 0;">
+                                    incl. <?= number_format((float)($inv['vat_rate'] ?? 12), 0) ?>% VAT
+                                </div>
+                            <?php endif; ?>
+                        </td>
                         <td><?= htmlspecialchars($periodLabel) ?></td>
                         <td><?= htmlspecialchars($inv['due_date'] ?? '') ?></td>
                         <td>

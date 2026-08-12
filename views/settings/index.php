@@ -514,6 +514,25 @@ $paymentMethods = $paymentMethods ?? [];
                 </div>
 
                 <div class="settings-group">
+                    <label for="vat_rate">VAT Rate (%)</label>
+                    <input
+                        type="number"
+                        id="vat_rate"
+                        name="vat_rate"
+                        min="0"
+                        max="100"
+                        step="0.01"
+                        value="<?= htmlspecialchars(number_format((float)($settings['vat_rate'] ?? 12), 2, '.', '')) ?>"
+                        required
+                    >
+                    <div class="helper-text">
+                        Plan prices are normally billed VAT-excluded. VAT is added only for customers marked
+                        <strong>VAT inclusive</strong> on their customer profile (Nicole only by default).
+                        Example for VAT-inclusive: ₱2,500 + 12% = <strong>₱2,800.00</strong>.
+                    </div>
+                </div>
+
+                <div class="settings-group">
                     <label for="referral_reward_amount">Referral Reward Amount (₱)</label>
                     <input
                         type="number"

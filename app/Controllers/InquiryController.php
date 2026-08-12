@@ -723,14 +723,21 @@ class InquiryController
 
         $startDate = date('Y-m-d');
 
+        if (class_exists('BillingCycleService')) {
+            BillingCycleService::ensureSchema($pdo);
+        }
+
         $insertSubscription = $pdo->prepare("
-            INSERT INTO subscriptions (customer_id, plan_id, start_date, status)
-            VALUES (?, ?, ?, 'ACTIVE')
+            INSERT INTO subscriptions (customer_id, plan_id, start_date, billing_type, status)
+            VALUES (?, ?, ?, ?, 'ACTIVE')
         ");
         $insertSubscription->execute([
             $customerId,
             (int)$planDetails['id'],
             $startDate,
+            class_exists('BillingCycleService')
+                ? BillingCycleService::BILLING_TYPE_NEW
+                : 'NEW_ACTIVATION',
         ]);
 
         $monthlyPrice = (float)$planDetails['price'];

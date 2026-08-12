@@ -110,6 +110,9 @@ class SettingController
         if (!$this->columnExists($pdo, 'settings', 'billing_due_day')) {
             $pdo->exec("ALTER TABLE settings ADD COLUMN billing_due_day INT NOT NULL DEFAULT 8");
         }
+        if (!$this->columnExists($pdo, 'settings', 'vat_rate')) {
+            $pdo->exec("ALTER TABLE settings ADD COLUMN vat_rate DECIMAL(5,2) NOT NULL DEFAULT 12.00");
+        }
     }
 
     private function ensureSmtpColumns(PDO $pdo): void
@@ -162,7 +165,8 @@ class SettingController
                 smtp_password,
                 smtp_encryption,
                 billing_due_day,
-                referral_reward_amount
+                referral_reward_amount,
+                vat_rate
             FROM settings
             ORDER BY id ASC
             LIMIT 1
@@ -182,6 +186,11 @@ class SettingController
             $settings['referral_reward_amount'] = round((float)($settings['referral_reward_amount'] ?? 500), 2);
             if ($settings['referral_reward_amount'] <= 0) {
                 $settings['referral_reward_amount'] = 500;
+            }
+
+            $settings['vat_rate'] = round((float)($settings['vat_rate'] ?? 12), 2);
+            if ($settings['vat_rate'] < 0 || $settings['vat_rate'] > 100) {
+                $settings['vat_rate'] = 12.0;
             }
 
             return $settings;
@@ -256,6 +265,7 @@ class SettingController
             'smtp_encryption' => 'tls',
             'billing_due_day' => 8,
             'referral_reward_amount' => 500,
+            'vat_rate' => 12,
         ];
     }
 
@@ -568,6 +578,7 @@ class SettingController
             'smtp_encryption' => 'tls',
             'billing_due_day' => 8,
             'referral_reward_amount' => 500,
+            'vat_rate' => 12,
         ];
 
         $paymentMethods = [];
@@ -623,6 +634,7 @@ class SettingController
             $smtpEncryption  = strtolower(trim((string)($_POST['smtp_encryption'] ?? 'tls')));
             $billingDueDay   = (int)($_POST['billing_due_day'] ?? 8);
             $referralRewardAmount = (float)($_POST['referral_reward_amount'] ?? 500);
+            $vatRate = round((float)($_POST['vat_rate'] ?? 12), 2);
 
             if ($companyName === '') {
                 $companyName = 'ISP-BILLING-LITE';
@@ -665,6 +677,10 @@ class SettingController
                 $referralRewardAmount = 500;
             }
 
+            if ($vatRate < 0 || $vatRate > 100) {
+                $vatRate = 12.0;
+            }
+
             $stmt = $pdo->prepare("
                 UPDATE settings
                 SET
@@ -678,7 +694,8 @@ class SettingController
                     smtp_password = ?,
                     smtp_encryption = ?,
                     billing_due_day = ?,
-                    referral_reward_amount = ?
+                    referral_reward_amount = ?,
+                    vat_rate = ?
                 WHERE id = ?
             ");
             $stmt->execute([
@@ -693,6 +710,7 @@ class SettingController
                 $smtpEncryption,
                 $billingDueDay,
                 $referralRewardAmount,
+                $vatRate,
                 $id
             ]);
 

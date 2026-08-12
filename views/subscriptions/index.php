@@ -167,6 +167,7 @@ function subscriptions_page_url(int $page, string $search, string $statusFilter,
                         <?php endif; ?>
                     </a>
                 </th>
+                <th>Billing</th>
                 <th>
                     <a class="sort-link" href="<?= htmlspecialchars(subscriptions_sort_url('status', $sortBy, $sortDir, $search, $statusFilter)) ?>">
                         Status
@@ -189,13 +190,15 @@ function subscriptions_page_url(int $page, string $search, string $statusFilter,
         <tbody>
             <?php if (empty($subscriptions)): ?>
                 <tr>
-                    <td colspan="9" class="empty-state">No subscriptions found.</td>
+                    <td colspan="10" class="empty-state">No subscriptions found.</td>
                 </tr>
             <?php else: ?>
                 <?php foreach ($subscriptions as $sub): ?>
                     <?php
                         $status = strtoupper((string)($sub['status'] ?? ''));
                         $badgeClass = 'badge-info';
+                        $billingType = strtoupper((string)($sub['billing_type'] ?? 'NEW_ACTIVATION'));
+                        $billingLabel = $billingType === 'EXISTING_MIGRATE' ? 'Existing' : 'New';
 
                         if ($status === 'ACTIVE') {
                             $badgeClass = 'badge-success';
@@ -216,6 +219,11 @@ function subscriptions_page_url(int $page, string $search, string $statusFilter,
                         </td>
                         <td>₱<?= number_format((float)($sub['price'] ?? 0), 2) ?></td>
                         <td><?= htmlspecialchars($sub['start_date'] ?? '') ?></td>
+                        <td>
+                            <span class="badge <?= $billingType === 'EXISTING_MIGRATE' ? 'badge-warning' : 'badge-info' ?>">
+                                <?= htmlspecialchars($billingLabel) ?>
+                            </span>
+                        </td>
                         <td>
                             <span class="badge <?= $badgeClass ?>">
                                 <?= htmlspecialchars($status !== '' ? $status : 'N/A') ?>

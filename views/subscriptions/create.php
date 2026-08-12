@@ -6,7 +6,10 @@
 
 <div class="form-card">
     <h2 class="form-section-title">Subscription Details</h2>
-    <div class="form-help">Assign an active customer to a plan and set the subscription start date.</div>
+    <div class="form-help">
+        Assign an active customer to a plan. For existing customers already on service, choose
+        <strong>Existing customer</strong> so billing starts on the next full calendar month (no proration from enrollment date).
+    </div>
 
     <form method="POST" action="<?= url('/subscriptions') ?>" id="subscriptionForm">
         <?= csrf_field() ?>
@@ -58,7 +61,7 @@
             </div>
 
             <div class="form-group">
-                <label for="start_date">Start Date</label>
+                <label for="start_date">Enrollment / Start Date</label>
                 <input id="start_date" type="date" name="start_date" value="<?= date('Y-m-d') ?>" required>
             </div>
 
@@ -69,6 +72,36 @@
                     <option value="SUSPENDED">SUSPENDED</option>
                     <option value="CANCELLED">CANCELLED</option>
                 </select>
+            </div>
+
+            <div class="form-group full">
+                <label>Billing type</label>
+                <div class="billing-type-grid">
+                    <label class="billing-type-card">
+                        <input type="radio" name="billing_type" value="EXISTING_MIGRATE" id="billing_type_existing" checked>
+                        <span class="billing-type-body">
+                            <span class="billing-type-title">Existing customer</span>
+                            <span class="billing-type-copy">Already on service. Gets a regular full-month bill for the enrollment month (never prorated).</span>
+                        </span>
+                    </label>
+                    <label class="billing-type-card">
+                        <input type="radio" name="billing_type" value="NEW_ACTIVATION" id="billing_type_new">
+                        <span class="billing-type-body">
+                            <span class="billing-type-title">New activation</span>
+                            <span class="billing-type-copy">New install. Start date is the real activation date and may be prorated.</span>
+                        </span>
+                    </label>
+                </div>
+            </div>
+
+            <div class="form-group full" id="first_bill_wrap" hidden>
+                <label class="compact-check" for="create_first_bill">
+                    <input type="checkbox" id="create_first_bill" name="create_first_bill" value="1">
+                    <span>
+                        <span class="billing-type-title">Create first bill now</span>
+                        <span class="billing-type-copy">Email a prorated invoice immediately. Leave unchecked to wait until month-end.</span>
+                    </span>
+                </label>
             </div>
         </div>
 
@@ -85,15 +118,67 @@
 }
 .search-pick-input {
     width: 100%;
-    padding: 13px 14px;
-    border: 1px solid rgba(255,255,255,.10);
-    border-radius: 6px;
-    font-size: 14px;
-    background: rgba(255,255,255,.03);
+    padding: 10px 12px;
+    border: 1px solid rgba(255,255,255,.12);
+    border-radius: 4px;
+    font-size: 13px;
+    min-height: 38px;
+    background: #111113;
     color: #fff;
 }
 .search-pick-input::placeholder {
-    color: #8a8a8f;
+    color: #737373;
+}
+.billing-type-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
+.billing-type-card,
+.compact-check {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin: 0;
+    padding: 10px 12px;
+    border: 1px solid rgba(255,255,255,.10);
+    border-radius: 4px;
+    background: #111113;
+    cursor: pointer;
+    font-weight: 500;
+    color: #d4d4d4;
+}
+.billing-type-card:has(input:checked),
+.compact-check:has(input:checked) {
+    border-color: rgba(255,255,255,.28);
+    background: #17171a;
+}
+.billing-type-body {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+}
+.billing-type-title {
+    display: block;
+    font-size: 13px;
+    font-weight: 650;
+    color: #fff;
+    letter-spacing: .01em;
+}
+.billing-type-copy,
+.compact-check .billing-type-copy {
+    display: block;
+    font-size: 12px;
+    line-height: 1.45;
+    color: #a3a3a3;
+    font-weight: 500;
+    margin: 0;
+}
+@media (max-width: 820px) {
+    .billing-type-grid {
+        grid-template-columns: 1fr;
+    }
 }
 </style>
 
@@ -153,5 +238,25 @@
             planSearch.focus();
         }
     });
+
+    const firstBillWrap = document.getElementById('first_bill_wrap');
+    const firstBillCheckbox = document.getElementById('create_first_bill');
+    const billingRadios = document.querySelectorAll('input[name="billing_type"]');
+
+    function syncBillingTypeUi() {
+        const selected = document.querySelector('input[name="billing_type"]:checked');
+        const isNew = selected && selected.value === 'NEW_ACTIVATION';
+        if (firstBillWrap) {
+            firstBillWrap.hidden = !isNew;
+        }
+        if (!isNew && firstBillCheckbox) {
+            firstBillCheckbox.checked = false;
+        }
+    }
+
+    billingRadios.forEach(function (radio) {
+        radio.addEventListener('change', syncBillingTypeUi);
+    });
+    syncBillingTypeUi();
 })();
 </script>

@@ -5,16 +5,39 @@
  * - Coverage: 1st through last day of the service month
  * - Due date: billing_due_day of the FOLLOWING month (default 8)
  * - Still on-time on the due date; overdue starting the next day
- * - Mid-month activations: prorated first bill for remaining days
+ * - NEW_ACTIVATION: mid-month activations may be prorated for remaining days
+ * - EXISTING_MIGRATE: already on service; never prorate. First (and ongoing) bills are
+ *   full calendar months starting the enrollment month (1st–last).
+ * - VAT: only customers with vat_inclusive=1 get plan price + vat_rate (default 12%).
+ *   All other customers are billed VAT-excluded (plan price only).
  */
 class BillingCycleService
 {
     public const DEFAULT_DUE_DAY = 8;
+    public const DEFAULT_VAT_RATE = 12.0;
+    public const BILLING_TYPE_NEW = 'NEW_ACTIVATION';
+    public const BILLING_TYPE_EXISTING = 'EXISTING_MIGRATE';
 
     public static function ensureSchema(PDO $pdo): void
     {
         if (self::tableExists($pdo, 'settings') && !self::columnExists($pdo, 'settings', 'billing_due_day')) {
             $pdo->exec('ALTER TABLE settings ADD COLUMN billing_due_day INT NOT NULL DEFAULT 8');
+        }
+
+        if (self::tableExists($pdo, 'settings') && !self::columnExists($pdo, 'settings', 'vat_rate')) {
+            $pdo->exec('ALTER TABLE settings ADD COLUMN vat_rate DECIMAL(5,2) NOT NULL DEFAULT 12.00');
+        }
+
+        if (self::tableExists($pdo, 'customers') && !self::columnExists($pdo, 'customers', 'vat_inclusive')) {
+            $pdo->exec('ALTER TABLE customers ADD COLUMN vat_inclusive TINYINT(1) NOT NULL DEFAULT 0 AFTER status');
+        }
+
+        if (self::tableExists($pdo, 'subscriptions') && !self::columnExists($pdo, 'subscriptions', 'billing_type')) {
+            $pdo->exec("
+                ALTER TABLE subscriptions
+                ADD COLUMN billing_type VARCHAR(32) NOT NULL DEFAULT 'NEW_ACTIVATION'
+                AFTER start_date
+            ");
         }
 
         if (!self::tableExists($pdo, 'invoices')) {
@@ -33,6 +56,231 @@ class BillingCycleService
         if (!self::columnExists($pdo, 'invoices', 'coverage_days')) {
             $pdo->exec('ALTER TABLE invoices ADD COLUMN coverage_days INT UNSIGNED NULL AFTER is_prorated');
         }
+        if (!self::columnExists($pdo, 'invoices', 'subtotal')) {
+            $pdo->exec('ALTER TABLE invoices ADD COLUMN subtotal DECIMAL(12,2) NULL AFTER amount');
+        }
+        if (!self::columnExists($pdo, 'invoices', 'vat_rate')) {
+            $pdo->exec('ALTER TABLE invoices ADD COLUMN vat_rate DECIMAL(5,2) NULL AFTER subtotal');
+        }
+        if (!self::columnExists($pdo, 'invoices', 'vat_amount')) {
+            $pdo->exec('ALTER TABLE invoices ADD COLUMN vat_amount DECIMAL(12,2) NULL AFTER vat_rate');
+        }
+    }
+
+    public static function getVatRate(PDO $pdo): float
+    {
+        self::ensureSchema($pdo);
+
+        try {
+            $stmt = $pdo->query('SELECT vat_rate FROM settings ORDER BY id ASC LIMIT 1');
+            $row = $stmt ? $stmt->fetch() : false;
+            $rate = round((float)($row['vat_rate'] ?? self::DEFAULT_VAT_RATE), 2);
+            if ($rate < 0 || $rate > 100) {
+                return self::DEFAULT_VAT_RATE;
+            }
+
+            return $rate;
+        } catch (Throwable $e) {
+            return self::DEFAULT_VAT_RATE;
+        }
+    }
+
+    /**
+     * @return array{subtotal:float,vat_rate:float,vat_amount:float,amount:float}
+     */
+    public static function applyVat(PDO $pdo, float $netAmount, ?float $vatRate = null): array
+    {
+        $subtotal = round(max(0, $netAmount), 2);
+        $rate = $vatRate !== null ? round((float)$vatRate, 2) : self::getVatRate($pdo);
+        if ($rate < 0) {
+            $rate = 0.0;
+        }
+
+        $vatAmount = round($subtotal * ($rate / 100), 2);
+        $total = round($subtotal + $vatAmount, 2);
+
+        return [
+            'subtotal' => $subtotal,
+            'vat_rate' => $rate,
+            'vat_amount' => $vatAmount,
+            'amount' => $total,
+        ];
+    }
+
+    /**
+     * VAT is opt-in per customer (vat_inclusive). Default is VAT-excluded.
+     */
+    public static function customerAppliesVat(PDO $pdo, int $customerId): bool
+    {
+        self::ensureSchema($pdo);
+        if ($customerId <= 0 || !self::columnExists($pdo, 'customers', 'vat_inclusive')) {
+            return false;
+        }
+
+        try {
+            $stmt = $pdo->prepare('SELECT vat_inclusive FROM customers WHERE id = ? LIMIT 1');
+            $stmt->execute([$customerId]);
+            $row = $stmt->fetch();
+
+            return !empty($row['vat_inclusive']);
+        } catch (Throwable $e) {
+            return false;
+        }
+    }
+
+    /**
+     * Recalculate open (unpaid) invoices when a customer's VAT-inclusive flag changes.
+     * Does not modify PAID or VOID invoices.
+     *
+     * @return int Number of invoices updated
+     */
+    public static function syncOpenInvoicesVatForCustomer(PDO $pdo, int $customerId): int
+    {
+        self::ensureSchema($pdo);
+        if ($customerId <= 0) {
+            return 0;
+        }
+
+        $applyVat = self::customerAppliesVat($pdo, $customerId);
+        $stmt = $pdo->prepare("
+            SELECT id, amount, subtotal, vat_amount, referral_credit_applied
+            FROM invoices
+            WHERE customer_id = ?
+              AND UPPER(COALESCE(status, '')) IN ('ISSUED', 'OVERDUE', 'DRAFT', 'UNPAID')
+            ORDER BY id ASC
+        ");
+        $stmt->execute([$customerId]);
+        $rows = $stmt->fetchAll();
+        if (!$rows) {
+            return 0;
+        }
+
+        $update = $pdo->prepare("
+            UPDATE invoices
+            SET amount = ?, subtotal = ?, vat_rate = ?, vat_amount = ?
+            WHERE id = ?
+        ");
+        $updated = 0;
+
+        foreach ($rows as $row) {
+            $invoiceId = (int)($row['id'] ?? 0);
+            $currentVat = (float)($row['vat_amount'] ?? 0);
+            $credit = (float)($row['referral_credit_applied'] ?? 0);
+            $amount = (float)($row['amount'] ?? 0);
+            $subtotal = (float)($row['subtotal'] ?? 0);
+
+            // Recover net plan amount before VAT / after credit adjustments.
+            if ($currentVat > 0 && $subtotal > 0) {
+                $net = $subtotal;
+            } elseif ($currentVat > 0) {
+                $net = round(max(0, $amount + $credit - $currentVat), 2);
+            } elseif ($subtotal > 0) {
+                $net = $subtotal;
+            } else {
+                $net = round(max(0, $amount + $credit), 2);
+            }
+
+            if ($applyVat) {
+                $parts = self::applyVat($pdo, $net);
+                $finalAmount = round(max(0, $parts['amount'] - $credit), 2);
+                if (
+                    abs($finalAmount - $amount) < 0.005
+                    && abs($parts['vat_amount'] - $currentVat) < 0.005
+                ) {
+                    continue;
+                }
+                $update->execute([
+                    $finalAmount,
+                    $parts['subtotal'],
+                    $parts['vat_rate'],
+                    $parts['vat_amount'],
+                    $invoiceId,
+                ]);
+            } else {
+                $finalAmount = round(max(0, $net - $credit), 2);
+                if ($currentVat <= 0 && abs($finalAmount - $amount) < 0.005) {
+                    continue;
+                }
+                $update->execute([
+                    $finalAmount,
+                    $net,
+                    null,
+                    null,
+                    $invoiceId,
+                ]);
+            }
+            $updated++;
+        }
+
+        return $updated;
+    }
+
+    public static function normalizeBillingType(?string $type): string
+    {
+        $type = strtoupper(trim((string)$type));
+        if ($type === self::BILLING_TYPE_EXISTING || $type === 'EXISTING' || $type === 'MIGRATE') {
+            return self::BILLING_TYPE_EXISTING;
+        }
+
+        return self::BILLING_TYPE_NEW;
+    }
+
+    /**
+     * First full calendar month EXISTING_MIGRATE may be billed for =
+     * the enrollment month itself (never prorate; they are already on service).
+     * Enrollment Aug 12 → first billable month starts 2026-08-01.
+     */
+    public static function firstFullBillMonthStart(string $enrollmentDate): string
+    {
+        $ts = strtotime($enrollmentDate);
+        if ($ts === false) {
+            $ts = time();
+        }
+
+        return date('Y-m-01', $ts);
+    }
+
+    /**
+     * Create the current (or given) full-month regular bill for an existing customer.
+     * Never prorates. Applies VAT.
+     *
+     * @return array{id:int,amount:float,skipped?:bool}
+     */
+    public static function createRegularMonthBillForExisting(
+        PDO $pdo,
+        int $customerId,
+        float $monthlyPrice,
+        ?string $asOfDate = null
+    ): array {
+        self::ensureSchema($pdo);
+
+        $period = self::fullMonthPeriod($asOfDate ?: self::today());
+        if (self::invoiceExistsForPeriod($pdo, $customerId, $period['start'], $period['end'])) {
+            return ['id' => 0, 'amount' => 0.0, 'skipped' => true];
+        }
+
+        $net = round(max(0, $monthlyPrice), 2);
+        $dueDate = self::dueDateForCoverageEnd($pdo, $period['end']);
+        $days = (int)date('t', strtotime($period['start']));
+
+        $invoice = self::createInvoice($pdo, [
+            'customer_id' => $customerId,
+            'amount' => $net,
+            'due_date' => $dueDate,
+            'status' => 'ISSUED',
+            'billing_period_start' => $period['start'],
+            'billing_period_end' => $period['end'],
+            'is_prorated' => 0,
+            'coverage_days' => $days,
+        ]);
+
+        return $invoice + [
+            'due_date' => $dueDate,
+            'billing_period_start' => $period['start'],
+            'billing_period_end' => $period['end'],
+            'is_prorated' => false,
+            'skipped' => false,
+        ];
     }
 
     public static function getBillingDueDay(PDO $pdo): int
@@ -191,6 +439,7 @@ class BillingCycleService
                 s.customer_id,
                 s.plan_id,
                 s.start_date,
+                s.billing_type,
                 p.price,
                 p.name AS plan_name,
                 c.full_name,
@@ -206,6 +455,7 @@ class BillingCycleService
             $customerId = (int)($subscription['customer_id'] ?? 0);
             $startDate = (string)($subscription['start_date'] ?? '');
             $planPrice = (float)($subscription['price'] ?? 0);
+            $billingType = self::normalizeBillingType($subscription['billing_type'] ?? null);
 
             if ($customerId <= 0 || $planPrice <= 0 || $startDate === '') {
                 continue;
@@ -221,37 +471,47 @@ class BillingCycleService
                 continue;
             }
 
-            $startedThisMonth = date('Y-m', $startTs) === $period['year_month'];
-
-            // Full-cycle customers wait until month-end (unless forced).
-            if (!$isMonthEnd && !$startedThisMonth) {
+            // Mid-month: only EXISTING customers get a regular full-month bill if missing.
+            // NEW_ACTIVATION first bills use createFirstBillForActivation() (convert / explicit opt-in).
+            if (!$isMonthEnd && $billingType !== self::BILLING_TYPE_EXISTING) {
                 continue;
             }
 
-            if ($startedThisMonth) {
-                $coverage = self::buildPeriodForActivation($startDate);
+            $coverage = [
+                'start' => $period['start'],
+                'end' => $period['end'],
+                'year_month' => $period['year_month'],
+                'is_prorated' => false,
+                'coverage_days' => (int)date('t', strtotime($period['start'])),
+            ];
+
+            if ($billingType === self::BILLING_TYPE_EXISTING) {
+                // Already on service: full-month bills from the enrollment month onward. Never prorate.
+                $firstFullStart = self::firstFullBillMonthStart($startDate);
+                if ($period['start'] < $firstFullStart) {
+                    continue;
+                }
             } else {
-                $coverage = [
-                    'start' => $period['start'],
-                    'end' => $period['end'],
-                    'year_month' => $period['year_month'],
-                    'is_prorated' => false,
-                    'coverage_days' => (int)date('t', strtotime($period['start'])),
-                ];
+                // Genuine new activation: prorate remaining days of the activation month at month-end
+                // if no earlier first bill was created.
+                $startedThisMonth = date('Y-m', $startTs) === $period['year_month'];
+                if ($startedThisMonth && (int)date('j', $startTs) > 1) {
+                    $coverage = self::buildPeriodForActivation($startDate);
+                }
             }
 
             if (self::invoiceExistsForPeriod($pdo, $customerId, $coverage['start'], $coverage['end'])) {
                 continue;
             }
 
-            $amount = !empty($coverage['is_prorated'])
+            $netAmount = !empty($coverage['is_prorated'])
                 ? self::calculateProratedAmount($planPrice, $startDate)
                 : round($planPrice, 2);
             $dueDate = self::dueDateForCoverageEnd($pdo, $coverage['end']);
 
             $invoice = self::createInvoice($pdo, [
                 'customer_id' => $customerId,
-                'amount' => $amount,
+                'amount' => $netAmount,
                 'due_date' => $dueDate,
                 'status' => 'ISSUED',
                 'billing_period_start' => $coverage['start'],
@@ -270,11 +530,13 @@ class BillingCycleService
                     'is_prorated' => !empty($coverage['is_prorated']),
                     'full_name' => (string)($subscription['full_name'] ?? 'Customer'),
                     'email' => (string)($subscription['email'] ?? ''),
-                    'amount' => $amount,
+                    'amount' => (float)($invoice['amount'] ?? 0),
+                    'subtotal' => (float)($invoice['subtotal'] ?? $netAmount),
+                    'vat_rate' => (float)($invoice['vat_rate'] ?? 0),
+                    'vat_amount' => (float)($invoice['vat_amount'] ?? 0),
                 ];
                 $generated[] = $row;
 
-                // Auto-email customer (and BCC administrator) as soon as the bill is created.
                 if (!self::notificationExists($pdo, $customerId, (int)$row['id'], 'MONTHLY_BILL')) {
                     self::sendInvoiceLifecycleEmail($pdo, $row, 'MONTHLY_BILL');
                 }
@@ -292,35 +554,51 @@ class BillingCycleService
         self::ensureSchema($pdo);
 
         $customerId = (int)($input['customer_id'] ?? 0);
-        $amount = round((float)($input['amount'] ?? 0), 2);
+        $netAmount = round((float)($input['amount'] ?? 0), 2);
         $dueDate = (string)($input['due_date'] ?? '');
         $status = strtoupper((string)($input['status'] ?? 'ISSUED'));
         $periodStart = (string)($input['billing_period_start'] ?? '');
         $periodEnd = (string)($input['billing_period_end'] ?? '');
         $isProrated = !empty($input['is_prorated']) ? 1 : 0;
         $coverageDays = isset($input['coverage_days']) ? (int)$input['coverage_days'] : null;
+        $skipVat = !empty($input['skip_vat']);
 
         if ($customerId <= 0 || $dueDate === '') {
             return ['id' => 0, 'amount' => 0.0, 'referral_credit_applied' => 0.0];
         }
 
+        $vat = ($skipVat || !self::customerAppliesVat($pdo, $customerId))
+            ? [
+                'subtotal' => $netAmount,
+                'vat_rate' => 0.0,
+                'vat_amount' => 0.0,
+                'amount' => $netAmount,
+            ]
+            : self::applyVat($pdo, $netAmount);
+
         if (class_exists('ReferralService')) {
-            $created = ReferralService::insertInvoice($pdo, $customerId, $amount, $dueDate, $status, [
+            $created = ReferralService::insertInvoice($pdo, $customerId, (float)$vat['amount'], $dueDate, $status, [
                 'billing_period_start' => $periodStart !== '' ? $periodStart : null,
                 'billing_period_end' => $periodEnd !== '' ? $periodEnd : null,
                 'is_prorated' => $isProrated,
                 'coverage_days' => $coverageDays,
+                'subtotal' => $vat['subtotal'],
+                'vat_rate' => $vat['vat_rate'],
+                'vat_amount' => $vat['vat_amount'],
             ]);
         } else {
             $stmt = $pdo->prepare("
                 INSERT INTO invoices (
-                    customer_id, amount, due_date, status,
+                    customer_id, amount, subtotal, vat_rate, vat_amount, due_date, status,
                     billing_period_start, billing_period_end, is_prorated, coverage_days
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ");
             $stmt->execute([
                 $customerId,
-                $amount,
+                $vat['amount'],
+                $vat['subtotal'],
+                $vat['vat_rate'],
+                $vat['vat_amount'],
                 $dueDate,
                 $status,
                 $periodStart !== '' ? $periodStart : null,
@@ -330,12 +608,16 @@ class BillingCycleService
             ]);
             $created = [
                 'id' => (int)$pdo->lastInsertId(),
-                'amount' => $amount,
+                'amount' => $vat['amount'],
                 'referral_credit_applied' => 0.0,
             ];
         }
 
-        return $created;
+        return $created + [
+            'subtotal' => $vat['subtotal'],
+            'vat_rate' => $vat['vat_rate'],
+            'vat_amount' => $vat['vat_amount'],
+        ];
     }
 
     public static function createFirstBillForActivation(
@@ -349,14 +631,14 @@ class BillingCycleService
             return ['id' => 0, 'amount' => 0.0, 'skipped' => true];
         }
 
-        $amount = !empty($coverage['is_prorated'])
+        $netAmount = !empty($coverage['is_prorated'])
             ? self::calculateProratedAmount($monthlyPrice, $activationDate)
             : round($monthlyPrice, 2);
         $dueDate = self::dueDateForCoverageEnd($pdo, $coverage['end']);
 
         $invoice = self::createInvoice($pdo, [
             'customer_id' => $customerId,
-            'amount' => $amount,
+            'amount' => $netAmount,
             'due_date' => $dueDate,
             'status' => 'ISSUED',
             'billing_period_start' => $coverage['start'],
@@ -406,6 +688,9 @@ class BillingCycleService
                 i.id,
                 i.customer_id,
                 i.amount,
+                i.subtotal,
+                i.vat_rate,
+                i.vat_amount,
                 i.due_date,
                 i.billing_period_start,
                 i.billing_period_end,
@@ -444,6 +729,9 @@ class BillingCycleService
                 i.id,
                 i.customer_id,
                 i.amount,
+                i.subtotal,
+                i.vat_rate,
+                i.vat_amount,
                 i.due_date,
                 i.billing_period_start,
                 i.billing_period_end,
@@ -483,6 +771,9 @@ class BillingCycleService
                     i.id,
                     i.customer_id,
                     i.amount,
+                    i.subtotal,
+                    i.vat_rate,
+                    i.vat_amount,
                     i.due_date,
                     i.billing_period_start,
                     i.billing_period_end,
@@ -609,24 +900,43 @@ class BillingCycleService
             // keep default
         }
 
+        $vatRate = (float)($invoice['vat_rate'] ?? 0);
+        $vatAmount = (float)($invoice['vat_amount'] ?? 0);
+        $subtotal = (float)($invoice['subtotal'] ?? 0);
+        $vatNote = '';
+        if ($vatAmount > 0) {
+            $vatNote = ' (incl. ' . number_format($vatRate, 0) . '% VAT ₱' . number_format($vatAmount, 2) . ')';
+        }
+
         if ($type === 'MONTHLY_BILL') {
             $subject = 'Your monthly bill is ready - ' . $companyName;
             $headline = 'Monthly Bill';
             $message = 'Hello ' . $customerName . ', your bill for ' . $periodLabel
-                . ' is ready. Amount due: ₱' . $amount . '. Due date: ' . $dueDate
+                . ' is ready. Amount due: ₱' . $amount . $vatNote . '. Due date: ' . $dueDate
                 . ' (still on time on this date). Please pay via your billing portal.';
         } elseif ($type === 'DUE_REMINDER') {
             $subject = 'Payment due today - ' . $companyName;
             $headline = 'Payment Due Today';
             $message = 'Hello ' . $customerName . ', this is a reminder that Invoice #' . $invoiceId
-                . ' for ₱' . $amount . ' is due today (' . $dueDate . '). Billing period: '
+                . ' for ₱' . $amount . $vatNote . ' is due today (' . $dueDate . '). Billing period: '
                 . $periodLabel . '. Please pay today to avoid overdue status tomorrow.';
         } else {
             $subject = 'Overdue invoice notice - ' . $companyName;
             $headline = 'Overdue Invoice';
             $message = 'Hello ' . $customerName . ', Invoice #' . $invoiceId
-                . ' for ₱' . $amount . ' is now overdue (due date was ' . $dueDate
+                . ' for ₱' . $amount . $vatNote . ' is now overdue (due date was ' . $dueDate
                 . '). Billing period: ' . $periodLabel . '. Please settle your balance as soon as possible.';
+        }
+
+        $vatHtml = '';
+        if ($vatAmount > 0) {
+            $vatHtml = '
+            <p><strong>Subtotal:</strong> ₱' . htmlspecialchars(number_format($subtotal > 0 ? $subtotal : ((float)$invoice['amount'] - $vatAmount), 2), ENT_QUOTES, 'UTF-8') . '</p>
+            <p><strong>VAT (' . htmlspecialchars(number_format($vatRate, 0), ENT_QUOTES, 'UTF-8') . '%):</strong> ₱' . htmlspecialchars(number_format($vatAmount, 2), ENT_QUOTES, 'UTF-8') . '</p>
+            <p><strong>Total (VAT inclusive):</strong> ₱' . htmlspecialchars($amount, ENT_QUOTES, 'UTF-8') . '</p>
+            ';
+        } else {
+            $vatHtml = '<p><strong>Amount:</strong> ₱' . htmlspecialchars($amount, ENT_QUOTES, 'UTF-8') . '</p>';
         }
 
         $html = '
@@ -635,7 +945,7 @@ class BillingCycleService
             <p>' . htmlspecialchars($message, ENT_QUOTES, 'UTF-8') . '</p>
             <p><strong>Invoice:</strong> #' . (int)$invoiceId . '</p>
             <p><strong>Billing period:</strong> ' . htmlspecialchars($periodLabel, ENT_QUOTES, 'UTF-8') . '</p>
-            <p><strong>Amount:</strong> ₱' . htmlspecialchars($amount, ENT_QUOTES, 'UTF-8') . '</p>
+            ' . $vatHtml . '
             <p><strong>Due date:</strong> ' . htmlspecialchars($dueDate, ENT_QUOTES, 'UTF-8') . '</p>
             <p>Thank you,<br>' . htmlspecialchars($companyName, ENT_QUOTES, 'UTF-8') . '</p>
         ';

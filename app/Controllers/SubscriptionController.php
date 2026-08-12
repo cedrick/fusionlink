@@ -8,6 +8,22 @@ if (file_exists(__DIR__ . '/../Services/PlanService.php')) {
     require_once __DIR__ . '/../Services/PlanService.php';
 }
 
+if (file_exists(__DIR__ . '/../Services/BillingCycleService.php')) {
+    require_once __DIR__ . '/../Services/BillingCycleService.php';
+}
+
+if (file_exists(__DIR__ . '/../Services/EmailAlertService.php')) {
+    require_once __DIR__ . '/../Services/EmailAlertService.php';
+}
+
+if (file_exists(__DIR__ . '/../Services/MailService.php')) {
+    require_once __DIR__ . '/../Services/MailService.php';
+}
+
+if (file_exists(__DIR__ . '/../Services/ReferralService.php')) {
+    require_once __DIR__ . '/../Services/ReferralService.php';
+}
+
 class SubscriptionController
 {
     private function requireLogin(): void
@@ -45,6 +61,10 @@ class SubscriptionController
         $this->requireLogin();
 
         $pdo = $this->db();
+        PlanService::ensureSchema($pdo);
+        if (class_exists('BillingCycleService')) {
+            BillingCycleService::ensureSchema($pdo);
+        }
 
         $page = (int)($_GET['page'] ?? 1);
         $search = trim((string)($_GET['search'] ?? ''));
@@ -84,7 +104,7 @@ class SubscriptionController
         $params = [];
 
         if ($search !== '') {
-            $where[] = "(c.full_name LIKE :search OR p.name LIKE :search OR p.speed LIKE :search OR CAST(p.price AS CHAR) LIKE :search OR s.status LIKE :search OR s.start_date LIKE :search)";
+            $where[] = "(c.full_name LIKE :search OR p.name LIKE :search OR p.speed LIKE :search OR CAST(p.price AS CHAR) LIKE :search OR s.status LIKE :search OR s.start_date LIKE :search OR IFNULL(s.billing_type,'') LIKE :search)";
             $params[':search'] = '%' . $search . '%';
         }
 
@@ -129,6 +149,7 @@ class SubscriptionController
                 p.speed AS speed,
                 p.price AS price,
                 s.start_date,
+                s.billing_type,
                 s.status,
                 s.created_at
             FROM subscriptions s
@@ -200,6 +221,10 @@ class SubscriptionController
         $planId     = (int)($_POST['plan_id'] ?? 0);
         $startDate  = $_POST['start_date'] ?? date('Y-m-d');
         $status     = $_POST['status'] ?? 'ACTIVE';
+        $billingType = class_exists('BillingCycleService')
+            ? BillingCycleService::normalizeBillingType((string)($_POST['billing_type'] ?? BillingCycleService::BILLING_TYPE_EXISTING))
+            : 'EXISTING_MIGRATE';
+        $createFirstBill = isset($_POST['create_first_bill']) && (string)$_POST['create_first_bill'] === '1';
 
         $allowedStatus = ['ACTIVE', 'SUSPENDED', 'CANCELLED'];
         if (!in_array($status, $allowedStatus, true)) {
@@ -223,14 +248,122 @@ class SubscriptionController
             die("Selected customer is not active.");
         }
 
+        if (class_exists('BillingCycleService')) {
+            BillingCycleService::ensureSchema($pdo);
+        }
+
         $stmt = $pdo->prepare("
-            INSERT INTO subscriptions (customer_id, plan_id, start_date, status)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO subscriptions (customer_id, plan_id, start_date, billing_type, status)
+            VALUES (?, ?, ?, ?, ?)
         ");
-        $stmt->execute([$customerId, $planId, $startDate, $status]);
+        $stmt->execute([$customerId, $planId, $startDate, $billingType, $status]);
 
         if (class_exists('ActivityLogger')) {
-            ActivityLogger::logSession('Subscriptions', 'CREATE', 'Created subscription for customer ID ' . $customerId . ' with plan ID ' . $planId);
+            ActivityLogger::logSession(
+                'Subscriptions',
+                'CREATE',
+                'Created subscription for customer ID ' . $customerId . ' with plan ID ' . $planId
+                    . ' (billing_type=' . $billingType . ')'
+            );
+        }
+
+        // Existing customers: create this month's regular full bill immediately (never prorate).
+        if (
+            $billingType === (class_exists('BillingCycleService') ? BillingCycleService::BILLING_TYPE_EXISTING : 'EXISTING_MIGRATE')
+            && $status === 'ACTIVE'
+            && class_exists('BillingCycleService')
+        ) {
+            $planStmt = $pdo->prepare('SELECT id, name, price FROM plans WHERE id = ? LIMIT 1');
+            $planStmt->execute([$planId]);
+            $plan = $planStmt->fetch();
+            $monthlyPrice = (float)($plan['price'] ?? 0);
+
+            if ($monthlyPrice > 0) {
+                $invoiceData = BillingCycleService::createRegularMonthBillForExisting(
+                    $pdo,
+                    $customerId,
+                    $monthlyPrice,
+                    (string)$startDate
+                );
+                $invoiceId = (int)($invoiceData['id'] ?? 0);
+                if ($invoiceId > 0 && empty($invoiceData['skipped'])) {
+                    $custStmt = $pdo->prepare('SELECT full_name, email FROM customers WHERE id = ? LIMIT 1');
+                    $custStmt->execute([$customerId]);
+                    $customer = $custStmt->fetch() ?: [];
+
+                    BillingCycleService::sendMonthEndBillEmails($pdo, [[
+                        'id' => $invoiceId,
+                        'customer_id' => $customerId,
+                        'amount' => (float)($invoiceData['amount'] ?? 0),
+                        'due_date' => (string)($invoiceData['due_date'] ?? ''),
+                        'billing_period_start' => $invoiceData['billing_period_start'] ?? null,
+                        'billing_period_end' => $invoiceData['billing_period_end'] ?? null,
+                        'is_prorated' => false,
+                        'coverage_days' => $invoiceData['coverage_days'] ?? null,
+                        'full_name' => (string)($customer['full_name'] ?? 'Customer'),
+                        'email' => (string)($customer['email'] ?? ''),
+                    ]]);
+
+                    if (class_exists('ActivityLogger')) {
+                        ActivityLogger::logSession(
+                            'Subscriptions',
+                            'REGULAR_BILL',
+                            'Created regular full-month bill invoice #' . $invoiceId
+                                . ' for existing customer ID ' . $customerId
+                        );
+                    }
+                }
+            }
+        }
+
+        // Prorated first bill only for genuine new activations, and only when staff opts in.
+        if (
+            $createFirstBill
+            && $billingType === (class_exists('BillingCycleService') ? BillingCycleService::BILLING_TYPE_NEW : 'NEW_ACTIVATION')
+            && $status === 'ACTIVE'
+            && class_exists('BillingCycleService')
+        ) {
+            $planStmt = $pdo->prepare('SELECT id, name, price FROM plans WHERE id = ? LIMIT 1');
+            $planStmt->execute([$planId]);
+            $plan = $planStmt->fetch();
+            $monthlyPrice = (float)($plan['price'] ?? 0);
+
+            if ($monthlyPrice > 0) {
+                $invoiceData = BillingCycleService::createFirstBillForActivation(
+                    $pdo,
+                    $customerId,
+                    $monthlyPrice,
+                    (string)$startDate
+                );
+
+                $invoiceId = (int)($invoiceData['id'] ?? 0);
+                if ($invoiceId > 0 && empty($invoiceData['skipped'])) {
+                    $custStmt = $pdo->prepare('SELECT full_name, email FROM customers WHERE id = ? LIMIT 1');
+                    $custStmt->execute([$customerId]);
+                    $customer = $custStmt->fetch() ?: [];
+
+                    BillingCycleService::sendMonthEndBillEmails($pdo, [[
+                        'id' => $invoiceId,
+                        'customer_id' => $customerId,
+                        'amount' => (float)($invoiceData['amount'] ?? 0),
+                        'due_date' => (string)($invoiceData['due_date'] ?? ''),
+                        'billing_period_start' => $invoiceData['billing_period_start'] ?? null,
+                        'billing_period_end' => $invoiceData['billing_period_end'] ?? null,
+                        'is_prorated' => !empty($invoiceData['is_prorated']),
+                        'coverage_days' => $invoiceData['coverage_days'] ?? null,
+                        'full_name' => (string)($customer['full_name'] ?? 'Customer'),
+                        'email' => (string)($customer['email'] ?? ''),
+                    ]]);
+
+                    if (class_exists('ActivityLogger')) {
+                        ActivityLogger::logSession(
+                            'Subscriptions',
+                            'FIRST_BILL',
+                            'Created prorated first bill invoice #' . $invoiceId . ' for customer ID ' . $customerId
+                        );
+                    }
+                }
+            }
         }
 
         redirect("/subscriptions");
@@ -243,6 +376,9 @@ class SubscriptionController
 
         $pdo = $this->db();
         PlanService::ensureSchema($pdo);
+        if (class_exists('BillingCycleService')) {
+            BillingCycleService::ensureSchema($pdo);
+        }
 
         $id = (int)($_GET['id'] ?? 0);
         if ($id <= 0) {
@@ -295,6 +431,9 @@ class SubscriptionController
         $planId     = (int)($_POST['plan_id'] ?? 0);
         $startDate  = $_POST['start_date'] ?? date('Y-m-d');
         $status     = $_POST['status'] ?? 'ACTIVE';
+        $billingType = class_exists('BillingCycleService')
+            ? BillingCycleService::normalizeBillingType((string)($_POST['billing_type'] ?? BillingCycleService::BILLING_TYPE_EXISTING))
+            : 'EXISTING_MIGRATE';
 
         $allowedStatus = ['ACTIVE', 'SUSPENDED', 'CANCELLED'];
         if (!in_array($status, $allowedStatus, true)) {
@@ -303,6 +442,10 @@ class SubscriptionController
 
         if ($id <= 0 || $customerId <= 0 || $planId <= 0) {
             die("Invalid input.");
+        }
+
+        if (class_exists('BillingCycleService')) {
+            BillingCycleService::ensureSchema($pdo);
         }
 
         $existingStmt = $pdo->prepare("
@@ -337,10 +480,10 @@ class SubscriptionController
 
         $stmt = $pdo->prepare("
             UPDATE subscriptions
-            SET customer_id = ?, plan_id = ?, start_date = ?, status = ?
+            SET customer_id = ?, plan_id = ?, start_date = ?, billing_type = ?, status = ?
             WHERE id = ?
         ");
-        $stmt->execute([$customerId, $planId, $startDate, $status, $id]);
+        $stmt->execute([$customerId, $planId, $startDate, $billingType, $status, $id]);
 
         if (class_exists('ActivityLogger')) {
             ActivityLogger::logSession('Subscriptions', 'UPDATE', 'Updated subscription ID ' . $id);

@@ -706,8 +706,23 @@ class InvoiceController
         $address      = nl2br(htmlspecialchars($addressRaw, ENT_QUOTES, 'UTF-8'));
         $amountRaw    = (float)($invoice['amount'] ?? 0);
         $referralCreditRaw = (float)($invoice['referral_credit_applied'] ?? 0);
+        $vatAmountRaw = (float)($invoice['vat_amount'] ?? 0);
+        $vatRateRaw   = (float)($invoice['vat_rate'] ?? 0);
+        $subtotalRaw  = (float)($invoice['subtotal'] ?? 0);
+        if ($subtotalRaw <= 0 && $vatAmountRaw > 0) {
+            $subtotalRaw = round(max(0, $amountRaw + $referralCreditRaw - $vatAmountRaw), 2);
+        }
+        if ($subtotalRaw <= 0) {
+            $subtotalRaw = round($amountRaw + $referralCreditRaw, 2);
+        }
+        if ($vatRateRaw <= 0 && $vatAmountRaw > 0 && $subtotalRaw > 0) {
+            $vatRateRaw = 12.0;
+        }
         $amount       = number_format($amountRaw, 2);
         $referralCredit = number_format($referralCreditRaw, 2);
+        $subtotal     = number_format($subtotalRaw, 2);
+        $vatAmount    = number_format($vatAmountRaw, 2);
+        $vatRateLabel = number_format($vatRateRaw, 0);
         $createdAtRaw = (string)($invoice['created_at'] ?? '');
         $invoiceId    = (int)($invoice['id'] ?? 0);
 
@@ -717,7 +732,9 @@ class InvoiceController
 
         $planNameRaw  = trim((string)($invoice['plan_name'] ?? 'Internet Subscription'));
         $planSpeedRaw = trim((string)($invoice['plan_speed'] ?? ''));
-        $planPriceRaw = isset($invoice['plan_price']) ? (float)$invoice['plan_price'] : ($amountRaw + $referralCreditRaw);
+        $planPriceRaw = $subtotalRaw > 0
+            ? $subtotalRaw
+            : (isset($invoice['plan_price']) ? (float)$invoice['plan_price'] : ($amountRaw + $referralCreditRaw));
 
         $planName      = htmlspecialchars($planNameRaw !== '' ? $planNameRaw : 'Internet Subscription', ENT_QUOTES, 'UTF-8');
         $planSpeed     = htmlspecialchars($planSpeedRaw !== '' ? $planSpeedRaw : 'N/A', ENT_QUOTES, 'UTF-8');
@@ -937,10 +954,14 @@ class InvoiceController
                     </tbody>
                 </table>
 
-                ' . ($referralCreditRaw > 0 ? '
-                <div class="total-row" style="margin-top:8px;">Referral Credit: -₱ ' . $referralCredit . '</div>
+                <div class="total-row" style="margin-top:8px;">Subtotal: ₱ ' . $subtotal . '</div>
+                ' . ($vatAmountRaw > 0 ? '
+                <div class="total-row" style="margin-top:4px;">VAT (' . htmlspecialchars($vatRateLabel, ENT_QUOTES, 'UTF-8') . '%): ₱ ' . $vatAmount . '</div>
                 ' : '') . '
-                <div class="total-row">Total: ₱ ' . $amount . '</div>
+                ' . ($referralCreditRaw > 0 ? '
+                <div class="total-row" style="margin-top:4px;">Referral Credit: -₱ ' . $referralCredit . '</div>
+                ' : '') . '
+                <div class="total-row">Total' . ($vatAmountRaw > 0 ? ' (VAT inclusive)' : '') . ': ₱ ' . $amount . '</div>
 
                 <div class="bottom-note">ALL PAYMENTS TO BE MADE IN FAVOUR OF ' . htmlspecialchars(strtoupper($providerName), ENT_QUOTES, 'UTF-8') . '</div>
                 <div class="bottom-subnote">THIS IS A COMPUTER GENERATED INVOICE AND DOES NOT REQUIRE ANY SIGNATURE</div>
@@ -1265,6 +1286,9 @@ class InvoiceController
                     i.id,
                     i.customer_id,
                     i.amount,
+                    i.subtotal,
+                    i.vat_rate,
+                    i.vat_amount,
                     i.due_date,
                     i.billing_period_start,
                     i.billing_period_end,

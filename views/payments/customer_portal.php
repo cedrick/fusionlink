@@ -502,6 +502,14 @@ document.addEventListener('DOMContentLoaded', function () {
                                 value="₱<?= number_format((float)($invoice['amount'] ?? 0), 2) ?>"
                                 readonly
                             >
+                            <?php if ((float)($invoice['vat_amount'] ?? 0) > 0): ?>
+                                <div class="helper-text" style="margin-top:6px;">
+                                    Subtotal ₱<?= number_format((float)($invoice['subtotal'] ?? 0), 2) ?>
+                                    + <?= number_format((float)($invoice['vat_rate'] ?? 12), 0) ?>% VAT
+                                    ₱<?= number_format((float)($invoice['vat_amount'] ?? 0), 2) ?>
+                                    (VAT inclusive)
+                                </div>
+                            <?php endif; ?>
                         </div>
 
                         <div class="customer-form-group">

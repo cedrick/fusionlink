@@ -88,6 +88,22 @@
                     <option value="DISCONNECTED" <?= (($customer['status'] ?? '') === 'DISCONNECTED') ? 'selected' : '' ?>>DISCONNECTED</option>
                 </select>
             </div>
+
+            <div class="form-group full">
+                <label class="compact-check" for="vat_inclusive">
+                    <input
+                        type="checkbox"
+                        id="vat_inclusive"
+                        name="vat_inclusive"
+                        value="1"
+                        <?= !empty($customer['vat_inclusive']) ? 'checked' : '' ?>
+                    >
+                    <span>
+                        <span class="billing-type-title">VAT inclusive billing</span>
+                        <span class="billing-type-copy">Adds Settings VAT % on top of the plan price for this customer. Saving also recalculates their open (unpaid) invoices. Leave unchecked for normal VAT-excluded billing.</span>
+                    </span>
+                </label>
+            </div>
         </div>
 
         <div class="page-actions">
@@ -96,3 +112,37 @@
         </div>
     </form>
 </div>
+
+<style>
+.compact-check {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin: 0;
+    padding: 10px 12px;
+    border: 1px solid rgba(255,255,255,.10);
+    border-radius: 4px;
+    background: #111113;
+    cursor: pointer;
+    font-weight: 500;
+    color: #d4d4d4;
+}
+.compact-check:has(input:checked) {
+    border-color: rgba(255,255,255,.28);
+    background: #17171a;
+}
+.billing-type-title {
+    display: block;
+    font-size: 13px;
+    font-weight: 650;
+    color: #fff;
+}
+.billing-type-copy {
+    display: block;
+    font-size: 12px;
+    line-height: 1.45;
+    color: #a3a3a3;
+    font-weight: 500;
+    margin: 0;
+}
+</style>

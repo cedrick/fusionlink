@@ -699,6 +699,24 @@ textarea {
     min-height: 38px;
 }
 
+input[type="radio"],
+input[type="checkbox"] {
+    width: 14px;
+    height: 14px;
+    min-width: 14px;
+    min-height: 0;
+    padding: 0;
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    accent-color: #ffffff;
+    cursor: pointer;
+    flex: none;
+    appearance: auto;
+}
+
 input::placeholder,
 textarea::placeholder {
     color: #737373;

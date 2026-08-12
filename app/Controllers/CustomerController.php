@@ -8,6 +8,10 @@ if (file_exists(__DIR__ . '/../Services/CustomerPortalService.php')) {
     require_once __DIR__ . '/../Services/CustomerPortalService.php';
 }
 
+if (file_exists(__DIR__ . '/../Services/BillingCycleService.php')) {
+    require_once __DIR__ . '/../Services/BillingCycleService.php';
+}
+
 class CustomerController
 {
     private function requireLogin(): void
@@ -337,6 +341,9 @@ class CustomerController
 
         try {
             $pdo = $this->db();
+            if (class_exists('BillingCycleService')) {
+                BillingCycleService::ensureSchema($pdo);
+            }
             $stmt = $pdo->prepare("SELECT * FROM customers WHERE id = :id LIMIT 1");
             $stmt->execute([':id' => $id]);
             $customer = $stmt->fetch();
@@ -372,6 +379,7 @@ class CustomerController
         $phone     = $this->normalizePhone((string)($_POST['phone'] ?? ''));
         $address   = trim($_POST['address'] ?? '');
         $status    = $_POST['status'] ?? 'ACTIVE';
+        $vatInclusive = isset($_POST['vat_inclusive']) && (string)$_POST['vat_inclusive'] === '1' ? 1 : 0;
 
         if ($id <= 0) {
             $this->redirectWithError('/customers', 'Invalid customer ID.');
@@ -391,12 +399,17 @@ class CustomerController
 
         try {
             $pdo = $this->db();
+            if (class_exists('BillingCycleService')) {
+                BillingCycleService::ensureSchema($pdo);
+            }
+
             $sql = "UPDATE customers
                     SET full_name = :full_name,
                         email = :email,
                         phone = :phone,
                         address = :address,
-                        status = :status
+                        status = :status,
+                        vat_inclusive = :vat_inclusive
                     WHERE id = :id";
             $stmt = $pdo->prepare($sql);
             $stmt->execute([
@@ -405,11 +418,29 @@ class CustomerController
                 ':phone'     => $phone,
                 ':address'   => $address !== '' ? $address : null,
                 ':status'    => $status,
+                ':vat_inclusive' => $vatInclusive,
                 ':id'        => $id,
             ]);
 
+            $syncedInvoices = 0;
+            if (class_exists('BillingCycleService')) {
+                $syncedInvoices = BillingCycleService::syncOpenInvoicesVatForCustomer($pdo, $id);
+            }
+
             if (class_exists('ActivityLogger')) {
-                ActivityLogger::logSession('Customers', 'UPDATE', 'Updated customer ID ' . $id . ': ' . $full_name);
+                ActivityLogger::logSession(
+                    'Customers',
+                    'UPDATE',
+                    'Updated customer ID ' . $id . ': ' . $full_name
+                        . ($syncedInvoices > 0 ? ' (synced VAT on ' . $syncedInvoices . ' open invoice(s))' : '')
+                );
+            }
+
+            if ($syncedInvoices > 0) {
+                $_SESSION['success'] = 'Customer updated. VAT was recalculated on '
+                    . $syncedInvoices . ' open invoice' . ($syncedInvoices === 1 ? '' : 's') . '.';
+                redirect('/customers/edit?id=' . $id);
+                exit;
             }
 
             redirect('/customers');
@@ -745,11 +776,32 @@ class CustomerController
             }
 
             $sub = $pdo->prepare('
-                INSERT INTO subscriptions (customer_id, plan_id, start_date, status)
-                VALUES (?, ?, ?, "ACTIVE")
+                INSERT INTO subscriptions (customer_id, plan_id, start_date, billing_type, status)
+                VALUES (?, ?, ?, ?, "ACTIVE")
             ');
-            $sub->execute([$customerId, $plansByName[$planName], $startDate]);
+            $billingType = class_exists('BillingCycleService')
+                ? BillingCycleService::BILLING_TYPE_EXISTING
+                : 'EXISTING_MIGRATE';
+            if (class_exists('BillingCycleService')) {
+                BillingCycleService::ensureSchema($pdo);
+            }
+            $sub->execute([$customerId, $plansByName[$planName], $startDate, $billingType]);
             $subscriptionCreated = true;
+
+            // Existing imports get a regular full-month bill for the enrollment month (never prorate).
+            if (class_exists('BillingCycleService')) {
+                $planPriceStmt = $pdo->prepare('SELECT price FROM plans WHERE id = ? LIMIT 1');
+                $planPriceStmt->execute([(int)$plansByName[$planName]]);
+                $planPrice = (float)($planPriceStmt->fetchColumn() ?: 0);
+                if ($planPrice > 0) {
+                    BillingCycleService::createRegularMonthBillForExisting(
+                        $pdo,
+                        $customerId,
+                        $planPrice,
+                        (string)$startDate
+                    );
+                }
+            }
         }
 
         if ($activatePortal && $email !== '' && filter_var($email, FILTER_VALIDATE_EMAIL) && class_exists('CustomerPortalService')) {

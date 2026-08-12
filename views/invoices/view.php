@@ -43,6 +43,13 @@ if ($status === 'PAID') {
 <div class="value">
 ₱<?= number_format((float)($invoice['amount'] ?? 0), 2) ?>
 </div>
+<?php if ((float)($invoice['vat_amount'] ?? 0) > 0): ?>
+<div class="helper-text" style="margin-top:8px;">
+Subtotal ₱<?= number_format((float)($invoice['subtotal'] ?? 0), 2) ?>
++ <?= number_format((float)($invoice['vat_rate'] ?? 12), 0) ?>% VAT ₱<?= number_format((float)($invoice['vat_amount'] ?? 0), 2) ?>
+(VAT inclusive)
+</div>
+<?php endif; ?>
 </div>
 
 <div class="quick-card">
