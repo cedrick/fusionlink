@@ -386,7 +386,7 @@ class EmailAlertService
                 <p style="margin:6px 0;"><strong>Login URL:</strong> <a href="' . htmlspecialchars($portalLoginUrl, ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars($portalLoginUrl, ENT_QUOTES, 'UTF-8') . '</a></p>
                 <p style="margin:6px 0;"><strong>Email:</strong> ' . htmlspecialchars($portalLoginEmail, ENT_QUOTES, 'UTF-8') . '</p>
                 <p style="margin:6px 0;"><strong>Temporary Password:</strong> ' . htmlspecialchars($portalTemporaryPassword, ENT_QUOTES, 'UTF-8') . '</p>
-                <p style="margin:12px 0 0 0;">After signing in, a verification code will be sent to your email. Please change your password after your first login if your account settings allow it.</p>
+                <p style="margin:12px 0 0 0;">After signing in, a verification code will be sent to your email. Then open Billing Portal → Password to replace this temporary password.</p>
             </div>';
         }
 
@@ -554,10 +554,34 @@ class EmailAlertService
                 <p style="margin:6px 0;"><strong>Email:</strong> ' . htmlspecialchars($loginEmail, ENT_QUOTES, 'UTF-8') . '</p>
                 <p style="margin:6px 0;"><strong>Temporary Password:</strong> ' . htmlspecialchars($temporaryPassword, ENT_QUOTES, 'UTF-8') . '</p>
             </div>
-            <p>After signing in, a verification code will be sent to your email.</p>
+            <p>After signing in, a verification code will be sent to your email. Then open Billing Portal → Password to replace this temporary password.</p>
         ', $companyName);
 
         return self::notifyCustomer($pdo, $customerId, null, 'PORTAL_CREDENTIALS', $subject, $plainMessage, $html);
+    }
+
+    public static function notifyPortalPasswordReset(
+        PDO $pdo,
+        int $customerId,
+        string $customerName,
+        string $loginEmail,
+        string $temporaryPassword,
+        string $loginUrl
+    ): bool {
+        $companyName = self::getCompanyName($pdo);
+        $subject = 'Your Billing Portal Password Was Reset - ' . $companyName;
+        $plainMessage = 'Hello ' . $customerName . ', your billing portal password was reset. URL: ' . $loginUrl . ' | Email: ' . $loginEmail . ' | Temporary password: ' . $temporaryPassword;
+        $html = self::wrapHtml('Portal Password Reset', '
+            <p>Hello ' . htmlspecialchars($customerName, ENT_QUOTES, 'UTF-8') . ',</p>
+            <p>FusionLink reset your billing portal password. Use this temporary password to sign in, then change it under Billing Portal → Password.</p>
+            <div style="border:1px solid #c4b5fd;background:#f5f3ff;padding:18px 20px;margin:24px 0;">
+                <p style="margin:6px 0;"><strong>Login URL:</strong> <a href="' . htmlspecialchars($loginUrl, ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars($loginUrl, ENT_QUOTES, 'UTF-8') . '</a></p>
+                <p style="margin:6px 0;"><strong>Email:</strong> ' . htmlspecialchars($loginEmail, ENT_QUOTES, 'UTF-8') . '</p>
+                <p style="margin:6px 0;"><strong>Temporary Password:</strong> ' . htmlspecialchars($temporaryPassword, ENT_QUOTES, 'UTF-8') . '</p>
+            </div>
+        ', $companyName);
+
+        return self::notifyCustomer($pdo, $customerId, null, 'PORTAL_PASSWORD_RESET', $subject, $plainMessage, $html);
     }
 
     public static function notifyExistingCustomerPortalReady(

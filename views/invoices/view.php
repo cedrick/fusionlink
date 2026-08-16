@@ -43,6 +43,12 @@ if ($status === 'PAID') {
 <div class="value">
 ₱<?= number_format((float)($invoice['amount'] ?? 0), 2) ?>
 </div>
+<?php if ((float)($invoice['installment_amount'] ?? 0) > 0): ?>
+<div class="helper-text" style="margin-top:8px;">
+Plan ₱<?= number_format((float)($invoice['plan_amount'] ?? 0), 2) ?>
++ Installation installment ₱<?= number_format((float)($invoice['installment_amount'] ?? 0), 2) ?>
+</div>
+<?php endif; ?>
 <?php if ((float)($invoice['vat_amount'] ?? 0) > 0): ?>
 <div class="helper-text" style="margin-top:8px;">
 Subtotal ₱<?= number_format((float)($invoice['subtotal'] ?? 0), 2) ?>

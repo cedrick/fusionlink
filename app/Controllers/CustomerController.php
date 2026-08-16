@@ -12,6 +12,14 @@ if (file_exists(__DIR__ . '/../Services/BillingCycleService.php')) {
     require_once __DIR__ . '/../Services/BillingCycleService.php';
 }
 
+if (file_exists(__DIR__ . '/../Services/InstallationInstallmentService.php')) {
+    require_once __DIR__ . '/../Services/InstallationInstallmentService.php';
+}
+
+if (file_exists(__DIR__ . '/../Services/OmadaNetworkAccessService.php')) {
+    require_once __DIR__ . '/../Services/OmadaNetworkAccessService.php';
+}
+
 class CustomerController
 {
     private function requireLogin(): void
@@ -145,6 +153,9 @@ class CustomerController
 
         try {
             $pdo = $this->db();
+            if (class_exists('BillingCycleService')) {
+                BillingCycleService::ensureSchema($pdo);
+            }
 
             $page = (int)($_GET['page'] ?? 1);
             $search = trim((string)($_GET['search'] ?? ''));
@@ -162,11 +173,12 @@ class CustomerController
             }
 
             $allowedSort = [
-                'id' => 'id',
-                'full_name' => 'full_name',
-                'email' => 'email',
-                'phone' => 'phone',
-                'created_at' => 'created_at',
+                'id' => 'c.id',
+                'full_name' => 'c.full_name',
+                'email' => 'c.email',
+                'phone' => 'c.phone',
+                'created_at' => 'c.created_at',
+                'plan_name' => 'p.name',
             ];
 
             if (!isset($allowedSort[$sortBy])) {
@@ -181,16 +193,16 @@ class CustomerController
             $params = [];
 
             if ($search !== '') {
-                $where[] = "(full_name LIKE :search OR email LIKE :search OR phone LIKE :search OR address LIKE :search)";
+                $where[] = "(c.full_name LIKE :search OR c.email LIKE :search OR c.phone LIKE :search OR c.address LIKE :search OR IFNULL(p.name,'') LIKE :search OR IFNULL(s.billing_type,'') LIKE :search)";
                 $params[':search'] = '%' . $search . '%';
             }
 
             if ($statusFilter === 'DISCONNECTED') {
-                $where[] = "status = 'DISCONNECTED'";
+                $where[] = "c.status = 'DISCONNECTED'";
             } elseif ($statusFilter === 'NEW') {
-                $where[] = "status <> 'DISCONNECTED' AND created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)";
+                $where[] = "c.status <> 'DISCONNECTED' AND c.created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)";
             } elseif ($statusFilter === 'ACTIVE') {
-                $where[] = "status <> 'DISCONNECTED' AND created_at < DATE_SUB(NOW(), INTERVAL 30 DAY)";
+                $where[] = "c.status <> 'DISCONNECTED' AND c.created_at < DATE_SUB(NOW(), INTERVAL 30 DAY)";
             }
 
             $whereSql = '';
@@ -198,7 +210,27 @@ class CustomerController
                 $whereSql = 'WHERE ' . implode(' AND ', $where);
             }
 
-            $countSql = "SELECT COUNT(*) FROM customers {$whereSql}";
+            $subscriptionJoin = "
+                LEFT JOIN subscriptions s
+                    ON s.id = (
+                        SELECT ss.id
+                        FROM subscriptions ss
+                        WHERE ss.customer_id = c.id
+                        ORDER BY
+                            CASE WHEN ss.status = 'ACTIVE' THEN 0 ELSE 1 END,
+                            ss.created_at DESC,
+                            ss.id DESC
+                        LIMIT 1
+                    )
+                LEFT JOIN plans p ON p.id = s.plan_id
+            ";
+
+            $countSql = "
+                SELECT COUNT(*)
+                FROM customers c
+                {$subscriptionJoin}
+                {$whereSql}
+            ";
             $countStmt = $pdo->prepare($countSql);
             foreach ($params as $key => $value) {
                 $countStmt->bindValue($key, $value);
@@ -217,8 +249,19 @@ class CustomerController
             $orderBySql = $allowedSort[$sortBy] . ' ' . $sortDir;
 
             $sql = "
-                SELECT *
-                FROM customers
+                SELECT
+                    c.*,
+                    p.name AS plan_name,
+                    p.speed AS plan_speed,
+                    s.billing_type,
+                    (
+                        SELECT COALESCE(SUM(i.amount), 0)
+                        FROM invoices i
+                        WHERE i.customer_id = c.id
+                          AND i.status IN ('ISSUED', 'OVERDUE')
+                    ) AS balance_due
+                FROM customers c
+                {$subscriptionJoin}
                 {$whereSql}
                 ORDER BY {$orderBySql}
                 LIMIT :limit OFFSET :offset
@@ -344,6 +387,9 @@ class CustomerController
             if (class_exists('BillingCycleService')) {
                 BillingCycleService::ensureSchema($pdo);
             }
+            if (class_exists('OmadaNetworkAccessService')) {
+                OmadaNetworkAccessService::ensureSchema($pdo);
+            }
             $stmt = $pdo->prepare("SELECT * FROM customers WHERE id = :id LIMIT 1");
             $stmt->execute([':id' => $id]);
             $customer = $stmt->fetch();
@@ -356,16 +402,187 @@ class CustomerController
                 ? CustomerPortalService::getPortalStatus($pdo, $id)
                 : ['has_portal' => false, 'user_id' => 0, 'email' => ''];
 
+            $installmentPlans = class_exists('InstallationInstallmentService')
+                ? InstallationInstallmentService::listForCustomer($pdo, $id)
+                : [];
+            $activeInstallment = class_exists('InstallationInstallmentService')
+                ? InstallationInstallmentService::getActiveForCustomer($pdo, $id)
+                : null;
+
             View::render('customers/edit', [
                 'title' => 'Edit Customer',
                 'customer' => $customer,
                 'portalStatus' => $portalStatus,
+                'installmentPlans' => $installmentPlans,
+                'activeInstallment' => $activeInstallment,
                 'error' => $_SESSION['error'] ?? null,
                 'success' => $_SESSION['success'] ?? null,
             ]);
             unset($_SESSION['error'], $_SESSION['success']);
         } catch (Throwable $e) {
             $this->redirectWithError('/customers', 'Edit load failed: ' . $e->getMessage());
+        }
+    }
+
+    public function saveInstallment(): void
+    {
+        $this->requireLogin();
+
+        $customerId = (int)($_POST['customer_id'] ?? 0);
+        $existingId = (int)($_POST['installment_id'] ?? 0);
+        $totalAmount = (float)($_POST['total_amount'] ?? 0);
+        $monthlyAmount = (float)($_POST['monthly_amount'] ?? 0);
+        $monthsCompleted = (int)($_POST['months_already_completed'] ?? 0);
+        $notes = trim((string)($_POST['notes'] ?? ''));
+
+        if ($customerId <= 0) {
+            $this->redirectWithError('/customers', 'Invalid customer ID.');
+        }
+
+        if (!class_exists('InstallationInstallmentService')) {
+            $this->redirectWithError('/customers/edit?id=' . $customerId, 'Installment service unavailable.');
+        }
+
+        try {
+            $pdo = $this->db();
+            $result = InstallationInstallmentService::savePlan(
+                $pdo,
+                $customerId,
+                $totalAmount,
+                $monthlyAmount,
+                $monthsCompleted,
+                $notes !== '' ? $notes : null,
+                $existingId > 0 ? $existingId : null
+            );
+
+            if (empty($result['ok'])) {
+                $this->redirectWithError(
+                    '/customers/edit?id=' . $customerId,
+                    (string)($result['error'] ?? 'Could not save installment plan.')
+                );
+            }
+
+            if (class_exists('ActivityLogger')) {
+                ActivityLogger::logSession(
+                    'Customers',
+                    'INSTALLMENT_SAVE',
+                    'Saved installation installment #' . (int)($result['id'] ?? 0)
+                        . ' for customer ID ' . $customerId
+                        . ' (total=' . number_format($totalAmount, 2)
+                        . ', monthly=' . number_format($monthlyAmount, 2)
+                        . ', months_done=' . $monthsCompleted . ')'
+                );
+            }
+
+            $_SESSION['success'] = 'Installation installment plan saved.';
+            redirect('/customers/edit?id=' . $customerId);
+            exit;
+        } catch (Throwable $e) {
+            $this->redirectWithError('/customers/edit?id=' . $customerId, 'Save installment failed: ' . $e->getMessage());
+        }
+    }
+
+    public function cancelInstallment(): void
+    {
+        $this->requireLogin();
+
+        $customerId = (int)($_POST['customer_id'] ?? 0);
+        $installmentId = (int)($_POST['installment_id'] ?? 0);
+
+        if ($customerId <= 0 || $installmentId <= 0) {
+            $this->redirectWithError('/customers', 'Invalid installment request.');
+        }
+
+        if (!class_exists('InstallationInstallmentService')) {
+            $this->redirectWithError('/customers/edit?id=' . $customerId, 'Installment service unavailable.');
+        }
+
+        try {
+            $pdo = $this->db();
+            $ok = InstallationInstallmentService::cancelActive($pdo, $customerId, $installmentId);
+            if (!$ok) {
+                $this->redirectWithError('/customers/edit?id=' . $customerId, 'No active installment plan to cancel.');
+            }
+
+            if (class_exists('ActivityLogger')) {
+                ActivityLogger::logSession(
+                    'Customers',
+                    'INSTALLMENT_CANCEL',
+                    'Cancelled installation installment #' . $installmentId . ' for customer ID ' . $customerId
+                );
+            }
+
+            $_SESSION['success'] = 'Installation installment plan cancelled.';
+            redirect('/customers/edit?id=' . $customerId);
+            exit;
+        } catch (Throwable $e) {
+            $this->redirectWithError('/customers/edit?id=' . $customerId, 'Cancel installment failed: ' . $e->getMessage());
+        }
+    }
+
+    public function suspendNetwork(): void
+    {
+        $this->requireLogin();
+        $customerId = (int)($_POST['customer_id'] ?? 0);
+        if ($customerId <= 0) {
+            $this->redirectWithError('/customers', 'Invalid customer ID.');
+        }
+        if (!class_exists('OmadaNetworkAccessService')) {
+            $this->redirectWithError('/customers/edit?id=' . $customerId, 'Omada service unavailable.');
+        }
+
+        try {
+            $pdo = $this->db();
+            $result = OmadaNetworkAccessService::suspendCustomer($pdo, $customerId);
+            if (class_exists('ActivityLogger')) {
+                ActivityLogger::logSession(
+                    'Customers',
+                    'NETWORK_SUSPEND',
+                    'Suspend customer ID ' . $customerId . ': ' . (string)($result['message'] ?? '')
+                );
+            }
+            if (!empty($result['ok'])) {
+                $_SESSION['success'] = (string)$result['message'];
+            } else {
+                $_SESSION['error'] = (string)($result['message'] ?? 'Suspend failed.');
+            }
+            redirect('/customers/edit?id=' . $customerId);
+            exit;
+        } catch (Throwable $e) {
+            $this->redirectWithError('/customers/edit?id=' . $customerId, 'Suspend failed: ' . $e->getMessage());
+        }
+    }
+
+    public function restoreNetwork(): void
+    {
+        $this->requireLogin();
+        $customerId = (int)($_POST['customer_id'] ?? 0);
+        if ($customerId <= 0) {
+            $this->redirectWithError('/customers', 'Invalid customer ID.');
+        }
+        if (!class_exists('OmadaNetworkAccessService')) {
+            $this->redirectWithError('/customers/edit?id=' . $customerId, 'Omada service unavailable.');
+        }
+
+        try {
+            $pdo = $this->db();
+            $result = OmadaNetworkAccessService::restoreCustomer($pdo, $customerId);
+            if (class_exists('ActivityLogger')) {
+                ActivityLogger::logSession(
+                    'Customers',
+                    'NETWORK_RESTORE',
+                    'Restore customer ID ' . $customerId . ': ' . (string)($result['message'] ?? '')
+                );
+            }
+            if (!empty($result['ok'])) {
+                $_SESSION['success'] = (string)$result['message'];
+            } else {
+                $_SESSION['error'] = (string)($result['message'] ?? 'Restore failed.');
+            }
+            redirect('/customers/edit?id=' . $customerId);
+            exit;
+        } catch (Throwable $e) {
+            $this->redirectWithError('/customers/edit?id=' . $customerId, 'Restore failed: ' . $e->getMessage());
         }
     }
 
@@ -380,6 +597,7 @@ class CustomerController
         $address   = trim($_POST['address'] ?? '');
         $status    = $_POST['status'] ?? 'ACTIVE';
         $vatInclusive = isset($_POST['vat_inclusive']) && (string)$_POST['vat_inclusive'] === '1' ? 1 : 0;
+        $staticIp = trim((string)($_POST['static_ip'] ?? ''));
 
         if ($id <= 0) {
             $this->redirectWithError('/customers', 'Invalid customer ID.');
@@ -393,6 +611,10 @@ class CustomerController
             $this->redirectWithError('/customers/edit?id=' . $id, 'Phone number must be exactly 11 digits and must start with 09.');
         }
 
+        if ($staticIp !== '' && !filter_var($staticIp, FILTER_VALIDATE_IP)) {
+            $this->redirectWithError('/customers/edit?id=' . $id, 'Static IP must be a valid IPv4 or IPv6 address.');
+        }
+
         if (!in_array($status, ['ACTIVE', 'DISCONNECTED'], true)) {
             $status = 'ACTIVE';
         }
@@ -402,6 +624,9 @@ class CustomerController
             if (class_exists('BillingCycleService')) {
                 BillingCycleService::ensureSchema($pdo);
             }
+            if (class_exists('OmadaNetworkAccessService')) {
+                OmadaNetworkAccessService::ensureSchema($pdo);
+            }
 
             $sql = "UPDATE customers
                     SET full_name = :full_name,
@@ -409,7 +634,8 @@ class CustomerController
                         phone = :phone,
                         address = :address,
                         status = :status,
-                        vat_inclusive = :vat_inclusive
+                        vat_inclusive = :vat_inclusive,
+                        static_ip = :static_ip
                     WHERE id = :id";
             $stmt = $pdo->prepare($sql);
             $stmt->execute([
@@ -419,6 +645,7 @@ class CustomerController
                 ':address'   => $address !== '' ? $address : null,
                 ':status'    => $status,
                 ':vat_inclusive' => $vatInclusive,
+                ':static_ip' => $staticIp !== '' ? $staticIp : null,
                 ':id'        => $id,
             ]);
 
@@ -540,6 +767,52 @@ class CustomerController
         } catch (Throwable $e) {
             error_log('CustomerController@activatePortal error: ' . $e->getMessage());
             $this->redirectWithError($returnTo, $e->getMessage());
+        }
+    }
+
+    public function resetPortalPassword(): void
+    {
+        $this->requireLogin();
+
+        $id = (int)($_POST['id'] ?? 0);
+        $returnTo = trim((string)($_POST['return_to'] ?? '/customers/edit'));
+        if (!in_array($returnTo, ['/customers', '/customers/edit'], true)) {
+            $returnTo = '/customers/edit';
+        }
+
+        if ($id <= 0) {
+            $this->redirectWithError($returnTo === '/customers' ? '/customers' : '/customers', 'Invalid customer ID.');
+        }
+
+        $redirectUrl = $returnTo === '/customers' ? '/customers' : '/customers/edit?id=' . $id;
+
+        try {
+            if (!class_exists('CustomerPortalService')) {
+                throw new RuntimeException('Portal service is unavailable.');
+            }
+
+            $pdo = $this->db();
+            $result = CustomerPortalService::resetPortalPassword($pdo, $id, true);
+
+            if (class_exists('ActivityLogger')) {
+                ActivityLogger::logSession(
+                    'Customers',
+                    'RESET_PORTAL_PASSWORD',
+                    'Reset billing portal password for customer ID ' . $id . ' (' . $result['email'] . ').'
+                );
+            }
+
+            $message = 'Portal password reset for ' . $result['customer_name'] . '. Email: ' . $result['email'] . ' | Temporary password: ' . $result['password'];
+            if ($result['mail_sent']) {
+                $message .= ' The new password was emailed to the customer.';
+            } else {
+                $message .= ' Email was not sent — share the password manually.';
+            }
+
+            $this->redirectWithSuccess($redirectUrl, $message);
+        } catch (Throwable $e) {
+            error_log('CustomerController@resetPortalPassword error: ' . $e->getMessage());
+            $this->redirectWithError($redirectUrl, $e->getMessage());
         }
     }
 

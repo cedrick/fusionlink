@@ -4,6 +4,14 @@ if (file_exists(__DIR__ . '/../Services/BillingCycleService.php')) {
     require_once __DIR__ . '/../Services/BillingCycleService.php';
 }
 
+if (file_exists(__DIR__ . '/../Services/InstallationInstallmentService.php')) {
+    require_once __DIR__ . '/../Services/InstallationInstallmentService.php';
+}
+
+if (file_exists(__DIR__ . '/../Services/OmadaNetworkAccessService.php')) {
+    require_once __DIR__ . '/../Services/OmadaNetworkAccessService.php';
+}
+
 if (file_exists(__DIR__ . '/../Services/ReferralService.php')) {
     require_once __DIR__ . '/../Services/ReferralService.php';
 }

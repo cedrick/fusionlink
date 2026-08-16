@@ -28,6 +28,12 @@ if ($timezone !== '') {
 }
 
 require_once $root . '/app/Services/BillingCycleService.php';
+if (is_file($root . '/app/Services/InstallationInstallmentService.php')) {
+    require_once $root . '/app/Services/InstallationInstallmentService.php';
+}
+if (is_file($root . '/app/Services/OmadaNetworkAccessService.php')) {
+    require_once $root . '/app/Services/OmadaNetworkAccessService.php';
+}
 if (is_file($root . '/app/Services/ReferralService.php')) {
     require_once $root . '/app/Services/ReferralService.php';
 }

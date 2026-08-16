@@ -537,14 +537,74 @@ $paymentMethods = $paymentMethods ?? [];
                     <input
                         type="number"
                         step="0.01"
-                        min="1"
                         id="referral_reward_amount"
                         name="referral_reward_amount"
                         value="<?= htmlspecialchars(number_format((float)($settings['referral_reward_amount'] ?? 500), 2, '.', '')) ?>"
                     >
-                    <div class="helper-text">
-                        Bill discount given to an existing customer when someone they referred is approved.
-                    </div>
+                </div>
+
+                <h2 class="form-section-title" style="margin-top:28px;">Omada / ER605 network control</h2>
+                <div class="form-help" style="margin-bottom:12px;">
+                    Auto-disconnect unpaid customers by blocking their static LAN IP on the ER605 via Omada Controller.
+                    Use OpenAPI Client ID/Secret <em>or</em> local controller username/password.
+                </div>
+
+                <div class="settings-group">
+                    <label class="compact-check" for="omada_enabled" style="display:flex;gap:8px;align-items:flex-start;">
+                        <input type="checkbox" id="omada_enabled" name="omada_enabled" value="1" <?= !empty($settings['omada_enabled']) ? 'checked' : '' ?>>
+                        <span>Enable Omada auto suspend / restore</span>
+                    </label>
+                </div>
+
+                <div class="settings-group">
+                    <label for="omada_base_url">Controller URL</label>
+                    <input type="text" id="omada_base_url" name="omada_base_url"
+                           value="<?= htmlspecialchars((string)($settings['omada_base_url'] ?? '')) ?>"
+                           placeholder="https://192.168.0.5:8043">
+                </div>
+
+                <div class="settings-group">
+                    <label for="omada_omadac_id">Controller ID (omadacId)</label>
+                    <input type="text" id="omada_omadac_id" name="omada_omadac_id"
+                           value="<?= htmlspecialchars((string)($settings['omada_omadac_id'] ?? '')) ?>">
+                </div>
+
+                <div class="settings-group">
+                    <label for="omada_site_id">Site ID</label>
+                    <input type="text" id="omada_site_id" name="omada_site_id"
+                           value="<?= htmlspecialchars((string)($settings['omada_site_id'] ?? '')) ?>">
+                    <div class="helper-text">Site where the ER605 is adopted. Test connection lists sites if Site ID is wrong.</div>
+                </div>
+
+                <div class="settings-group">
+                    <label for="omada_client_id">OpenAPI Client ID</label>
+                    <input type="text" id="omada_client_id" name="omada_client_id"
+                           value="<?= htmlspecialchars((string)($settings['omada_client_id'] ?? '')) ?>">
+                </div>
+
+                <div class="settings-group">
+                    <label for="omada_client_secret">OpenAPI Client Secret</label>
+                    <input type="password" id="omada_client_secret" name="omada_client_secret" value=""
+                           placeholder="<?= trim((string)($settings['omada_client_secret'] ?? '')) !== '' ? 'Leave blank to keep current secret' : '' ?>">
+                </div>
+
+                <div class="settings-group">
+                    <label for="omada_username">Local username (fallback)</label>
+                    <input type="text" id="omada_username" name="omada_username"
+                           value="<?= htmlspecialchars((string)($settings['omada_username'] ?? '')) ?>">
+                </div>
+
+                <div class="settings-group">
+                    <label for="omada_password">Local password (fallback)</label>
+                    <input type="password" id="omada_password" name="omada_password" value=""
+                           placeholder="<?= trim((string)($settings['omada_password'] ?? '')) !== '' ? 'Leave blank to keep current password' : '' ?>">
+                </div>
+
+                <div class="settings-group">
+                    <label class="compact-check" for="omada_allow_insecure" style="display:flex;gap:8px;align-items:flex-start;">
+                        <input type="checkbox" id="omada_allow_insecure" name="omada_allow_insecure" value="1" <?= !isset($settings['omada_allow_insecure']) || !empty($settings['omada_allow_insecure']) ? 'checked' : '' ?>>
+                        <span>Allow insecure SSL (self-signed controller cert)</span>
+                    </label>
                 </div>
             </div>
 
@@ -628,6 +688,15 @@ $paymentMethods = $paymentMethods ?? [];
     </div>
 
     <div class="settings-card">
+        <h2>Omada Connection Test</h2>
+        <p class="section-note">Save Omada settings first, then test. A successful test means FusionLink can reach the controller.</p>
+        <form method="POST" action="<?= url('/settings/test-omada') ?>">
+            <?= csrf_field() ?>
+            <button type="submit" class="btn btn-secondary">Test Omada Connection</button>
+        </form>
+    </div>
+
+    <div class="settings-card">
         <h2>Email Alert Test</h2>
         <p class="section-note">
             Send a test message to confirm SMTP is working before relying on billing alerts.
@@ -658,9 +727,10 @@ $paymentMethods = $paymentMethods ?? [];
     <div class="settings-card">
         <h2>Database Backup & Restore</h2>
         <p class="section-note">
-            Create a full SQL snapshot, restore from an uploaded file, or manage copies already stored on the server in
-            <strong>storage/backups</strong>. Automatic backups run daily at <strong>02:30 Asia/Manila</strong>
-            and older <strong>automatic</strong> backups are pruned after
+            New backups are <strong>.zip</strong> archives: the MySQL dump plus GCash receipts, payment-method images,
+            CMS uploads, and official receipts. Older <strong>.sql</strong> copies still restore the database only.
+            Files are stored in <strong>storage/backups</strong>. Automatic backups run daily at
+            <strong>02:30 Asia/Manila</strong> and older <strong>automatic</strong> backups are pruned after
             <strong><?= (int)$backupRetentionDays ?> days</strong> (manual/uploaded copies are kept).
         </p>
 
@@ -693,7 +763,7 @@ $paymentMethods = $paymentMethods ?? [];
                     method="POST"
                     action="<?= url('/settings/restore-latest') ?>"
                     style="margin-top:12px;"
-                    onsubmit="return confirm('Restore the latest server backup and replace the entire database?');"
+                    onsubmit="return confirm('Restore the latest server backup? This replaces the database and receipt/OR files.');"
                 >
                     <?= csrf_field() ?>
                     <button type="submit" class="btn btn-secondary">Restore Latest Server Backup</button>
@@ -743,7 +813,7 @@ $paymentMethods = $paymentMethods ?? [];
                                             method="POST"
                                             action="<?= url('/settings/restore-selected') ?>"
                                             style="margin:0;"
-                                            onsubmit="return confirm('Restore <?= htmlspecialchars($rowName, ENT_QUOTES, 'UTF-8') ?> and replace the entire database?');"
+                                            onsubmit="return confirm('Restore <?= htmlspecialchars($rowName, ENT_QUOTES, 'UTF-8') ?>? This replaces the database and, for .zip backups, receipt/OR files.');"
                                         >
                                             <?= csrf_field() ?>
                                             <input type="hidden" name="file" value="<?= htmlspecialchars($rowName, ENT_QUOTES, 'UTF-8') ?>">
@@ -772,22 +842,22 @@ $paymentMethods = $paymentMethods ?? [];
             method="POST"
             action="<?= url('/settings/restore') ?>"
             enctype="multipart/form-data"
-            onsubmit="return confirm('This will replace the entire database with the uploaded SQL file. Continue?');"
+            onsubmit="return confirm('This will replace the live database. Zip backups also replace receipt and official-receipt files. Continue?');"
             style="margin-top:18px;"
         >
             <?= csrf_field() ?>
             <div class="settings-grid">
                 <div class="settings-group full">
-                    <label for="backup_file">Upload SQL Backup File</label>
+                    <label for="backup_file">Upload Backup File</label>
                     <input
                         type="file"
                         id="backup_file"
                         name="backup_file"
-                        accept=".sql,application/sql,text/plain"
+                        accept=".zip,.sql,application/zip,application/sql,text/plain"
                         required
                     >
                     <div class="helper-text">
-                        Choose a FusionLink <strong>.sql</strong> backup file from your computer.
+                        Choose a FusionLink <strong>.zip</strong> (database + files) or legacy <strong>.sql</strong> backup.
                         Current server upload limit: <strong><?= htmlspecialchars((string)$backupUploadLimit, ENT_QUOTES, 'UTF-8') ?></strong>.
                     </div>
                 </div>

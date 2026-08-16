@@ -6,7 +6,7 @@
 
 <div class="form-card">
     <h2 class="form-section-title">Customer Information</h2>
-    <div class="form-help">Fill out the details below to create a new customer account.</div>
+    <div class="form-help">Fill out the details below to create a new customer account. After saving, use Edit for VAT / installment / static IP, then create a subscription and choose Existing customer or New activation.</div>
 
     <form method="POST" action="<?= url('/customers/store') ?>">
         <?= csrf_field() ?>

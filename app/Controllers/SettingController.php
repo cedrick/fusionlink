@@ -20,6 +20,10 @@ if (file_exists(__DIR__ . '/../Services/DatabaseBackupService.php')) {
     require_once __DIR__ . '/../Services/DatabaseBackupService.php';
 }
 
+if (file_exists(__DIR__ . '/../Services/OmadaNetworkAccessService.php')) {
+    require_once __DIR__ . '/../Services/OmadaNetworkAccessService.php';
+}
+
 class SettingController
 {
     private function requireLogin(): void
@@ -113,6 +117,9 @@ class SettingController
         if (!$this->columnExists($pdo, 'settings', 'vat_rate')) {
             $pdo->exec("ALTER TABLE settings ADD COLUMN vat_rate DECIMAL(5,2) NOT NULL DEFAULT 12.00");
         }
+        if (class_exists('OmadaNetworkAccessService')) {
+            OmadaNetworkAccessService::ensureSchema($pdo);
+        }
     }
 
     private function ensureSmtpColumns(PDO $pdo): void
@@ -149,6 +156,9 @@ class SettingController
         if (class_exists('ReferralService')) {
             ReferralService::ensureSchema($pdo);
         }
+        if (class_exists('OmadaNetworkAccessService')) {
+            OmadaNetworkAccessService::ensureSchema($pdo);
+        }
 
         $stmt = $pdo->query("
             SELECT
@@ -166,7 +176,16 @@ class SettingController
                 smtp_encryption,
                 billing_due_day,
                 referral_reward_amount,
-                vat_rate
+                vat_rate,
+                omada_enabled,
+                omada_base_url,
+                omada_omadac_id,
+                omada_site_id,
+                omada_client_id,
+                omada_client_secret,
+                omada_username,
+                omada_password,
+                omada_allow_insecure
             FROM settings
             ORDER BY id ASC
             LIMIT 1
@@ -192,6 +211,9 @@ class SettingController
             if ($settings['vat_rate'] < 0 || $settings['vat_rate'] > 100) {
                 $settings['vat_rate'] = 12.0;
             }
+
+            $settings['omada_enabled'] = (int)($settings['omada_enabled'] ?? 0);
+            $settings['omada_allow_insecure'] = (int)($settings['omada_allow_insecure'] ?? 1);
 
             return $settings;
         }
@@ -266,6 +288,15 @@ class SettingController
             'billing_due_day' => 8,
             'referral_reward_amount' => 500,
             'vat_rate' => 12,
+            'omada_enabled' => 0,
+            'omada_base_url' => '',
+            'omada_omadac_id' => '',
+            'omada_site_id' => '',
+            'omada_client_id' => '',
+            'omada_client_secret' => '',
+            'omada_username' => '',
+            'omada_password' => '',
+            'omada_allow_insecure' => 1,
         ];
     }
 
@@ -351,7 +382,7 @@ class SettingController
             return null;
         }
 
-        $files = glob($backupDir . '/*.sql');
+        $files = array_merge(glob($backupDir . '/*.sql') ?: [], glob($backupDir . '/*.zip') ?: []);
         if (!$files || !is_array($files)) {
             return null;
         }
@@ -555,7 +586,7 @@ class SettingController
         }
 
         if (class_exists('ActivityLogger')) {
-            ActivityLogger::logSession('Settings', 'RESTORE', 'Restored backup: ' . $label);
+            ActivityLogger::logSession('Settings', 'RESTORE', 'Restored backup (database and files): ' . $label);
         }
     }
 
@@ -579,6 +610,15 @@ class SettingController
             'billing_due_day' => 8,
             'referral_reward_amount' => 500,
             'vat_rate' => 12,
+            'omada_enabled' => 0,
+            'omada_base_url' => '',
+            'omada_omadac_id' => '',
+            'omada_site_id' => '',
+            'omada_client_id' => '',
+            'omada_client_secret' => '',
+            'omada_username' => '',
+            'omada_password' => '',
+            'omada_allow_insecure' => 1,
         ];
 
         $paymentMethods = [];
@@ -635,6 +675,22 @@ class SettingController
             $billingDueDay   = (int)($_POST['billing_due_day'] ?? 8);
             $referralRewardAmount = (float)($_POST['referral_reward_amount'] ?? 500);
             $vatRate = round((float)($_POST['vat_rate'] ?? 12), 2);
+            $omadaEnabled = isset($_POST['omada_enabled']) && (string)$_POST['omada_enabled'] === '1' ? 1 : 0;
+            $omadaBaseUrl = rtrim(trim((string)($_POST['omada_base_url'] ?? '')), '/');
+            $omadaOmadacId = trim((string)($_POST['omada_omadac_id'] ?? ''));
+            $omadaSiteId = trim((string)($_POST['omada_site_id'] ?? ''));
+            $omadaClientId = trim((string)($_POST['omada_client_id'] ?? ''));
+            $omadaClientSecret = trim((string)($_POST['omada_client_secret'] ?? ''));
+            $omadaUsername = trim((string)($_POST['omada_username'] ?? ''));
+            $omadaPassword = trim((string)($_POST['omada_password'] ?? ''));
+            $omadaAllowInsecure = isset($_POST['omada_allow_insecure']) && (string)$_POST['omada_allow_insecure'] === '1' ? 1 : 0;
+
+            if ($omadaClientSecret === '') {
+                $omadaClientSecret = (string)($settings['omada_client_secret'] ?? '');
+            }
+            if ($omadaPassword === '') {
+                $omadaPassword = (string)($settings['omada_password'] ?? '');
+            }
 
             if ($companyName === '') {
                 $companyName = 'ISP-BILLING-LITE';
@@ -695,7 +751,16 @@ class SettingController
                     smtp_encryption = ?,
                     billing_due_day = ?,
                     referral_reward_amount = ?,
-                    vat_rate = ?
+                    vat_rate = ?,
+                    omada_enabled = ?,
+                    omada_base_url = ?,
+                    omada_omadac_id = ?,
+                    omada_site_id = ?,
+                    omada_client_id = ?,
+                    omada_client_secret = ?,
+                    omada_username = ?,
+                    omada_password = ?,
+                    omada_allow_insecure = ?
                 WHERE id = ?
             ");
             $stmt->execute([
@@ -711,6 +776,15 @@ class SettingController
                 $billingDueDay,
                 $referralRewardAmount,
                 $vatRate,
+                $omadaEnabled,
+                $omadaBaseUrl !== '' ? $omadaBaseUrl : null,
+                $omadaOmadacId !== '' ? $omadaOmadacId : null,
+                $omadaSiteId !== '' ? $omadaSiteId : null,
+                $omadaClientId !== '' ? $omadaClientId : null,
+                $omadaClientSecret !== '' ? $omadaClientSecret : null,
+                $omadaUsername !== '' ? $omadaUsername : null,
+                $omadaPassword !== '' ? $omadaPassword : null,
+                $omadaAllowInsecure,
                 $id
             ]);
 
@@ -730,6 +804,28 @@ class SettingController
         } catch (Throwable $e) {
             error_log('SettingController@update error: ' . $e->getMessage());
             $this->redirectWithStatus('error', 'Failed to update settings.');
+        }
+    }
+
+    public function testOmada(): void
+    {
+        $this->requireAdmin();
+
+        try {
+            $pdo = $this->db();
+            $this->ensureSettingsRow($pdo);
+            if (!class_exists('OmadaNetworkAccessService')) {
+                $this->redirectWithStatus('error', 'Omada service unavailable.');
+            }
+
+            $result = OmadaNetworkAccessService::testConnection($pdo);
+            if (!empty($result['ok'])) {
+                $this->redirectWithStatus('success', (string)$result['message']);
+            }
+            $this->redirectWithStatus('error', (string)($result['message'] ?? 'Omada connection failed.'));
+        } catch (Throwable $e) {
+            error_log('SettingController@testOmada: ' . $e->getMessage());
+            $this->redirectWithStatus('error', 'Omada test failed: ' . $e->getMessage());
         }
     }
 
@@ -795,11 +891,7 @@ class SettingController
                 ActivityLogger::logSession('Settings', 'BACKUP', 'Created database backup: ' . $created['name']);
             }
 
-            header('Content-Type: application/sql');
-            header('Content-Disposition: attachment; filename="' . basename($created['name']) . '"');
-            header('Content-Length: ' . (int)$created['size']);
-            readfile($created['path']);
-            exit;
+            $this->sendBackupDownload($created['path']);
         } catch (Throwable $e) {
             error_log('SettingController@backup error: ' . $e->getMessage());
             $this->redirectWithStatus('error', $e->getMessage() !== '' ? $e->getMessage() : 'Failed to backup database.');
@@ -818,11 +910,7 @@ class SettingController
                 ActivityLogger::logSession('Settings', 'BACKUP_DOWNLOAD', 'Downloaded backup: ' . basename($path));
             }
 
-            header('Content-Type: application/sql');
-            header('Content-Disposition: attachment; filename="' . basename($path) . '"');
-            header('Content-Length: ' . (int)filesize($path));
-            readfile($path);
-            exit;
+            $this->sendBackupDownload($path);
         } catch (Throwable $e) {
             error_log('SettingController@downloadBackup error: ' . $e->getMessage());
             $this->redirectWithStatus('error', $e->getMessage());
@@ -839,7 +927,7 @@ class SettingController
 
             $this->importSqlBackup($sqlFile, $label);
 
-            $this->redirectWithStatus('success', 'Database restored successfully from uploaded file: ' . $label . '.');
+            $this->redirectWithStatus('success', 'Backup restored successfully from uploaded file: ' . $label . '.');
         } catch (Throwable $e) {
             error_log('SettingController@restore error: ' . $e->getMessage());
             $this->redirectWithStatus('error', $e->getMessage());
@@ -859,7 +947,7 @@ class SettingController
             $label = basename($latestBackupFile);
             $this->importSqlBackup($latestBackupFile, $label);
 
-            $this->redirectWithStatus('success', 'Database restored successfully from latest server backup: ' . $label . '.');
+            $this->redirectWithStatus('success', 'Backup restored successfully from latest server backup: ' . $label . '.');
         } catch (Throwable $e) {
             error_log('SettingController@restoreLatest error: ' . $e->getMessage());
             $this->redirectWithStatus('error', $e->getMessage());
@@ -875,7 +963,7 @@ class SettingController
             $path = DatabaseBackupService::resolveBackupPath($fileName);
             $label = basename($path);
             $this->importSqlBackup($path, $label);
-            $this->redirectWithStatus('success', 'Database restored successfully from server backup: ' . $label . '.');
+            $this->redirectWithStatus('success', 'Backup restored successfully from server backup: ' . $label . '.');
         } catch (Throwable $e) {
             error_log('SettingController@restoreSelected error: ' . $e->getMessage());
             $this->redirectWithStatus('error', $e->getMessage());
@@ -925,5 +1013,18 @@ class SettingController
             error_log('SettingController@reset error: ' . $e->getMessage());
             $this->redirectWithStatus('error', 'Failed to reset database records.');
         }
+    }
+
+    private function sendBackupDownload(string $path): void
+    {
+        $name = basename($path);
+        $extension = strtolower((string)pathinfo($name, PATHINFO_EXTENSION));
+        $contentType = $extension === 'zip' ? 'application/zip' : 'application/sql';
+
+        header('Content-Type: ' . $contentType);
+        header('Content-Disposition: attachment; filename="' . $name . '"');
+        header('Content-Length: ' . (int)filesize($path));
+        readfile($path);
+        exit;
     }
 }

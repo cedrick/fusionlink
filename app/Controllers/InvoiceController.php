@@ -24,6 +24,14 @@ if (file_exists(__DIR__ . '/../Services/BillingCycleService.php')) {
     require_once __DIR__ . '/../Services/BillingCycleService.php';
 }
 
+if (file_exists(__DIR__ . '/../Services/InstallationInstallmentService.php')) {
+    require_once __DIR__ . '/../Services/InstallationInstallmentService.php';
+}
+
+if (file_exists(__DIR__ . '/../Services/OfficialReceiptService.php')) {
+    require_once __DIR__ . '/../Services/OfficialReceiptService.php';
+}
+
 class InvoiceController
 {
     private function db(): PDO
@@ -54,6 +62,16 @@ class InvoiceController
             redirect('/login');
             exit;
         }
+    }
+
+    private function isCustomer(): bool
+    {
+        return (($_SESSION['user']['role'] ?? '') === 'ROLE_CUSTOMER');
+    }
+
+    private function loggedInCustomerId(): int
+    {
+        return (int)($_SESSION['user']['customer_id'] ?? 0);
     }
 
     private function tableExists(PDO $pdo, string $tableName): bool
@@ -740,6 +758,12 @@ class InvoiceController
         $planSpeed     = htmlspecialchars($planSpeedRaw !== '' ? $planSpeedRaw : 'N/A', ENT_QUOTES, 'UTF-8');
         $planValidity  = 'Monthly';
         $planAmount    = number_format($planPriceRaw > 0 ? $planPriceRaw : $amountRaw, 2);
+        $installmentAmountRaw = (float)($invoice['installment_amount'] ?? 0);
+        $invoicePlanAmountRaw = (float)($invoice['plan_amount'] ?? 0);
+        if ($invoicePlanAmountRaw > 0) {
+            $planAmount = number_format($invoicePlanAmountRaw, 2);
+        }
+        $installmentAmountFmt = number_format($installmentAmountRaw, 2);
 
         $providerName       = (string)$settings['company_name'];
         $providerAddress    = (string)$settings['business_address'];
@@ -951,6 +975,12 @@ class InvoiceController
                             <td>' . htmlspecialchars($planValidity, ENT_QUOTES, 'UTF-8') . '</td>
                             <td class="text-right">₱ ' . $planAmount . '</td>
                         </tr>
+                        ' . ($installmentAmountRaw > 0 ? '
+                        <tr>
+                            <td colspan="3">Installation fee installment</td>
+                            <td class="text-right">₱ ' . $installmentAmountFmt . '</td>
+                        </tr>
+                        ' : '') . '
                     </tbody>
                 </table>
 
@@ -963,7 +993,7 @@ class InvoiceController
                 ' : '') . '
                 <div class="total-row">Total' . ($vatAmountRaw > 0 ? ' (VAT inclusive)' : '') . ': ₱ ' . $amount . '</div>
 
-                <div class="bottom-note">ALL PAYMENTS TO BE MADE IN FAVOUR OF ' . htmlspecialchars(strtoupper($providerName), ENT_QUOTES, 'UTF-8') . '</div>
+                <div class="bottom-note">Please pay this invoice to ' . htmlspecialchars($providerName, ENT_QUOTES, 'UTF-8') . ' using the payment methods listed above.</div>
                 <div class="bottom-subnote">THIS IS A COMPUTER GENERATED INVOICE AND DOES NOT REQUIRE ANY SIGNATURE</div>
             </div>
         </body>
@@ -977,9 +1007,50 @@ class InvoiceController
             'subscription_start_date' => (string)($invoice['subscription_start_date'] ?? ''),
             'statement_period_start' => $periodStart,
             'statement_period_end' => $periodEnd,
+            'filename' => $this->invoicePdfFilename(
+                (string)($invoice['customer_name'] ?? 'Customer'),
+                $planNameRaw !== '' ? $planNameRaw : 'Internet Subscription',
+                $periodStart,
+                $periodEnd
+            ),
             'settings' => $settings,
             'html' => $html,
         ];
+    }
+
+    private function invoicePdfFilename(
+        string $customerName,
+        string $planName,
+        string $periodStart,
+        string $periodEnd
+    ): string {
+        $customerName = trim($customerName) !== '' ? trim($customerName) : 'Customer';
+        $planName = trim($planName) !== '' ? trim($planName) : 'Plan';
+
+        $periodLabel = '';
+        $startTs = strtotime($periodStart);
+        $endTs = strtotime($periodEnd);
+        if ($startTs !== false && $endTs !== false) {
+            if (date('Y-m', $startTs) === date('Y-m', $endTs)) {
+                $periodLabel = date('M Y', $startTs);
+            } else {
+                $periodLabel = date('M j Y', $startTs) . ' to ' . date('M j Y', $endTs);
+            }
+        } elseif ($startTs !== false) {
+            $periodLabel = date('M Y', $startTs);
+        } else {
+            $periodLabel = 'Billing';
+        }
+
+        $raw = $customerName . ' - ' . $planName . ' - ' . $periodLabel;
+        $safe = preg_replace('/[\/\\\\:\*\?"<>|]+/', ' ', $raw) ?? $raw;
+        $safe = preg_replace('/\s+/', ' ', $safe) ?? $safe;
+        $safe = trim($safe, " .-");
+        if ($safe === '') {
+            $safe = 'Invoice';
+        }
+
+        return $safe . '.pdf';
     }
 
     private function sendInvoiceEmail(PDO $pdo, int $invoiceId): bool
@@ -1252,6 +1323,8 @@ class InvoiceController
             if ($statusFilter !== '') {
                 $where[] = "i.status = :status";
                 $params[':status'] = $statusFilter;
+            } else {
+                $where[] = "UPPER(COALESCE(i.status, '')) NOT IN ('VOID', 'CANCELLED')";
             }
 
             $whereSql = '';
@@ -1294,6 +1367,9 @@ class InvoiceController
                     i.billing_period_end,
                     i.is_prorated,
                     i.coverage_days,
+                    i.plan_amount,
+                    i.installment_amount,
+                    i.official_receipt_path,
                     i.status,
                     i.created_at,
                     c.full_name AS customer_name
@@ -1317,9 +1393,15 @@ class InvoiceController
             error_log("InvoiceController@index error: " . $e->getMessage());
         }
 
+        $flashSuccess = $_SESSION['invoice_flash_success'] ?? null;
+        $flashError = $_SESSION['invoice_flash_error'] ?? null;
+        unset($_SESSION['invoice_flash_success'], $_SESSION['invoice_flash_error']);
+
         View::render('invoices/index', [
             'title' => 'Invoices',
             'invoices' => $invoices,
+            'flashSuccess' => $flashSuccess,
+            'flashError' => $flashError,
             'page' => $page,
             'perPage' => $perPage,
             'totalRows' => $totalRows,
@@ -1496,6 +1578,141 @@ class InvoiceController
         exit;
     }
 
+    public function attachOfficialReceipt(): void
+    {
+        $this->requireLogin();
+
+        if ($this->isCustomer()) {
+            redirect('/payments/create');
+            exit;
+        }
+
+        $invoiceId = (int)($_POST['invoice_id'] ?? 0);
+        $returnTo = trim((string)($_POST['return_to'] ?? ''));
+        $redirectPath = $returnTo === 'payments' ? '/payments' : '/invoices';
+
+        try {
+            $pdo = $this->db();
+            if (class_exists('OfficialReceiptService')) {
+                OfficialReceiptService::ensureSchema($pdo);
+            }
+
+            $result = class_exists('OfficialReceiptService')
+                ? OfficialReceiptService::attach($pdo, $invoiceId, $_FILES['official_receipt'] ?? [])
+                : ['ok' => false, 'message' => 'Official Receipt service is not available.', 'path' => null];
+
+            if (!empty($result['ok'])) {
+                $_SESSION['invoice_flash_success'] = (string)$result['message'];
+                $_SESSION['payment_flash_success'] = (string)$result['message'];
+                if (class_exists('ActivityLogger')) {
+                    ActivityLogger::logSession(
+                        'Invoices',
+                        'ATTACH_OR',
+                        'Attached Official Receipt to invoice ID ' . $invoiceId . '.'
+                    );
+                }
+            } else {
+                $_SESSION['invoice_flash_error'] = (string)($result['message'] ?? 'Unable to attach Official Receipt.');
+                $_SESSION['payment_flash_error'] = (string)($result['message'] ?? 'Unable to attach Official Receipt.');
+            }
+        } catch (Throwable $e) {
+            error_log('InvoiceController@attachOfficialReceipt error: ' . $e->getMessage());
+            $_SESSION['invoice_flash_error'] = 'Unable to attach Official Receipt right now.';
+            $_SESSION['payment_flash_error'] = 'Unable to attach Official Receipt right now.';
+        }
+
+        redirect($redirectPath);
+        exit;
+    }
+
+    public function downloadOfficialReceipt(): void
+    {
+        $this->requireLogin();
+
+        $invoiceId = (int)($_GET['id'] ?? 0);
+        if ($invoiceId <= 0) {
+            http_response_code(404);
+            echo 'Official Receipt not found.';
+            exit;
+        }
+
+        try {
+            $pdo = $this->db();
+            if (class_exists('OfficialReceiptService')) {
+                OfficialReceiptService::ensureSchema($pdo);
+            }
+
+            $stmt = $pdo->prepare("
+                SELECT
+                    i.id,
+                    i.customer_id,
+                    i.vat_amount,
+                    i.official_receipt_path,
+                    i.billing_period_start,
+                    i.billing_period_end,
+                    c.full_name AS customer_name
+                FROM invoices i
+                LEFT JOIN customers c ON c.id = i.customer_id
+                WHERE i.id = ?
+                LIMIT 1
+            ");
+            $stmt->execute([$invoiceId]);
+            $invoice = $stmt->fetch();
+
+            if (!$invoice || trim((string)($invoice['official_receipt_path'] ?? '')) === '') {
+                http_response_code(404);
+                echo 'Official Receipt not found.';
+                exit;
+            }
+
+            if ($this->isCustomer()) {
+                $ownerId = (int)($invoice['customer_id'] ?? 0);
+                if ($ownerId <= 0 || $ownerId !== $this->loggedInCustomerId()) {
+                    http_response_code(403);
+                    echo 'You cannot view this Official Receipt.';
+                    exit;
+                }
+            }
+
+            $absolute = OfficialReceiptService::absolutePath((string)$invoice['official_receipt_path']);
+            if ($absolute === '' || !is_file($absolute)) {
+                http_response_code(404);
+                echo 'Official Receipt file is missing.';
+                exit;
+            }
+
+            $ext = strtolower(pathinfo($absolute, PATHINFO_EXTENSION));
+            $period = '';
+            $startTs = strtotime((string)($invoice['billing_period_start'] ?? ''));
+            if ($startTs !== false) {
+                $period = date('M Y', $startTs);
+            }
+            $downloadName = trim((string)($invoice['customer_name'] ?? 'Customer'))
+                . ' - Official Receipt'
+                . ($period !== '' ? ' - ' . $period : '');
+            $downloadName = preg_replace('/[\/\\\\:\*\?"<>|]+/', ' ', $downloadName) ?? $downloadName;
+            $downloadName = trim(preg_replace('/\s+/', ' ', $downloadName) ?? $downloadName) . '.' . $ext;
+
+            while (ob_get_level() > 0) {
+                ob_end_clean();
+            }
+
+            header('Content-Type: ' . OfficialReceiptService::mimeType($absolute));
+            header(
+                'Content-Disposition: attachment; filename="' . str_replace('"', '', $downloadName) . '"'
+            );
+            header('Content-Length: ' . (string)filesize($absolute));
+            header('Cache-Control: private, no-store, no-cache, must-revalidate');
+            readfile($absolute);
+            exit;
+        } catch (Throwable $e) {
+            error_log('InvoiceController@downloadOfficialReceipt error: ' . $e->getMessage());
+            http_response_code(500);
+            echo 'Unable to download Official Receipt.';
+            exit;
+        }
+    }
+
     public function pdf(): void
     {
         $this->requireLogin();
@@ -1521,25 +1738,61 @@ class InvoiceController
 
             $id = (int)($_GET['id'] ?? 0);
             if ($id <= 0) {
-                redirect('/invoices');
+                redirect($this->isCustomer() ? '/payments/create' : '/invoices');
                 exit;
             }
 
             $pdfData = $this->getInvoicePdfData($pdo, $id);
             if (!$pdfData) {
-                redirect('/invoices');
+                redirect($this->isCustomer() ? '/payments/create' : '/invoices');
                 exit;
             }
 
-            $dompdf = new \Dompdf\Dompdf();
+            if ($this->isCustomer()) {
+                $ownerId = (int)(($pdfData['invoice']['customer_id'] ?? 0));
+                if ($ownerId <= 0 || $ownerId !== $this->loggedInCustomerId()) {
+                    http_response_code(403);
+                    echo 'You cannot download this invoice.';
+                    exit;
+                }
+            }
+
+            $dompdf = new \Dompdf\Dompdf([
+                'isRemoteEnabled' => false,
+                'isHtml5ParserEnabled' => true,
+            ]);
             $dompdf->loadHtml($pdfData['html']);
             $dompdf->setPaper('A4', 'portrait');
             $dompdf->render();
-            $dompdf->stream('invoice-' . $pdfData['invoice_id'] . '.pdf', ['Attachment' => false]);
+
+            while (ob_get_level() > 0) {
+                ob_end_clean();
+            }
+
+            $filename = (string)($pdfData['filename'] ?? ('invoice-' . (int)$pdfData['invoice_id'] . '.pdf'));
+            $binary = $dompdf->output();
+            $asciiName = preg_replace('/[^\x20-\x7E]/', '_', $filename) ?: ('invoice-' . (int)$pdfData['invoice_id'] . '.pdf');
+
+            header('Content-Type: application/pdf');
+            header(
+                'Content-Disposition: attachment; filename="' . str_replace('"', '', $asciiName) . '"; filename*=UTF-8\'\''
+                . rawurlencode($filename)
+            );
+            header('Content-Transfer-Encoding: binary');
+            header('Content-Length: ' . strlen($binary));
+            header('Cache-Control: private, no-store, no-cache, must-revalidate');
+            header('Pragma: public');
+            echo $binary;
             exit;
         } catch (Throwable $e) {
             error_log("InvoiceController@pdf error: " . $e->getMessage());
-            redirect('/invoices');
+            while (ob_get_level() > 0) {
+                ob_end_clean();
+            }
+            header('Content-Type: text/html; charset=utf-8');
+            http_response_code(500);
+            echo '<p>Unable to download this invoice PDF.</p>';
+            echo '<p><a href="' . htmlspecialchars(url('/invoices'), ENT_QUOTES, 'UTF-8') . '">Back to Invoices</a></p>';
             exit;
         }
     }

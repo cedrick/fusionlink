@@ -38,6 +38,7 @@ $role = $_SESSION['user']['role'] ?? '';
 $isLoggedIn = !empty($_SESSION['user']);
 $isAdmin = in_array($role, ['ROLE_ADMIN', 'ADMIN', 'admin'], true);
 $isStaff = in_array($role, ['ROLE_ADMIN', 'ROLE_STAFF', 'ADMIN', 'STAFF', 'admin', 'staff'], true);
+$isCustomer = ($role === 'ROLE_CUSTOMER');
 $currentPath = request_path();
 $isAuthPage = in_array($currentPath, ['/login', '/verify-otp'], true);
 $pwaScope = base_path() === '' ? '/' : base_path() . '/';
@@ -1359,6 +1360,7 @@ textarea {
                     'gear' => '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.4 13a7.7 7.7 0 0 0 0-2l2-1.5-2-3.5-2.4 1a7.4 7.4 0 0 0-1.7-1L15 3h-6l-.3 2.9a7.4 7.4 0 0 0-1.7 1L4.6 6l-2 3.5 2 1.5a7.7 7.7 0 0 0 0 2l-2 1.5 2 3.5 2.4-1a7.4 7.4 0 0 0 1.7 1L9 21h6l.3-2.9a7.4 7.4 0 0 0 1.7-1l2.4 1 2-3.5-2-1.5ZM12 15.5A3.5 3.5 0 1 1 15.5 12 3.5 3.5 0 0 1 12 15.5Z"/></svg>',
                     'grid' => '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3h8v8H3V3Zm10 0h8v8h-8V3ZM3 13h8v8H3v-8Zm10 0h8v8h-8v-8Z"/></svg>',
                     'logout' => '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 17v2H4V5h6v2H6v10h4Zm9-5-4-4v3H9v2h6v3l4-4Z"/></svg>',
+                    'lock' => '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 8h-1V6a4 4 0 0 0-8 0v2H7a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V10a2 2 0 0 0-2-2Zm-7-2a2 2 0 0 1 4 0v2h-4V6Zm7 14H7V10h10v10Zm-5-3a2 2 0 1 0-2-2 2 2 0 0 0 2 2Z"/></svg>',
                 ];
 
                 return $icons[$name] ?? $icons['grid'];
@@ -1366,7 +1368,7 @@ textarea {
             ?>
             <div class="brand">
                 <div class="brand-title"><?= htmlspecialchars($systemCompanyName) ?></div>
-                <div class="brand-subtitle">Enterprise Console</div>
+                <div class="brand-subtitle"><?= $isCustomer ? 'Billing Portal' : 'Enterprise Console' ?></div>
             </div>
 
             <div class="user-panel">
@@ -1381,7 +1383,11 @@ textarea {
                 <div class="side-section">
                     <div class="side-label">Workspace</div>
                     <div class="side-links">
-                        <a class="<?= $isActive(['/dashboard']) ?>" href="<?= url('/dashboard') ?>"><span class="nav-icon"><?= $navIcon('home') ?></span><span>Home</span></a>
+                        <?php if ($isCustomer): ?>
+                            <a class="<?= $isActive(['/payments/create']) ?>" href="<?= url('/payments/create') ?>"><span class="nav-icon"><?= $navIcon('card') ?></span><span>Billing</span></a>
+                        <?php else: ?>
+                            <a class="<?= $isActive(['/dashboard']) ?>" href="<?= url('/dashboard') ?>"><span class="nav-icon"><?= $navIcon('home') ?></span><span>Home</span></a>
+                        <?php endif; ?>
                     </div>
                 </div>
 
@@ -1417,6 +1423,7 @@ textarea {
                 <div class="side-section">
                     <div class="side-label">Account</div>
                     <div class="side-links">
+                        <a class="<?= $isActive(['/account/password']) ?>" href="<?= url('/account/password') ?>"><span class="nav-icon"><?= $navIcon('lock') ?></span><span>Password</span></a>
                         <a href="<?= url('/logout') ?>"><span class="nav-icon"><?= $navIcon('logout') ?></span><span>Logout</span></a>
                     </div>
                 </div>

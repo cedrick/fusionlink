@@ -32,8 +32,9 @@ function invoices_page_url(int $page, string $search, string $statusFilter, stri
 
 <h1>Invoices</h1>
 <p class="form-help">
-    Billing coverage is the 1st through month-end. Due date is the configured day of the <strong>following</strong> month
-    (default 8th). Still on time on the due date; overdue starts the next day. Mid-month activations are prorated.
+    Current cycle: <strong>Aug 1–31, 2026</strong>, due <strong>Sep 8</strong>. Still on time through the due date;
+    overdue starts the next day. Existing customers are billed a full month (never prorated).
+    VAT is added only for customers marked VAT inclusive. For those VAT bills, attach the Official Receipt here so the customer can download it from their portal.
 </p>
 
 <style>
@@ -47,6 +48,19 @@ function invoices_page_url(int $page, string $search, string $statusFilter, stri
     gap: 10px;
     flex-wrap: wrap;
     margin-bottom: 14px;
+}
+
+.or-attach-form {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+    margin-top: 8px;
+}
+
+.or-attach-form input[type="file"] {
+    max-width: 180px;
+    font-size: 12px;
 }
 
 @media (max-width: 1100px) {
@@ -65,6 +79,13 @@ function invoices_page_url(int $page, string $search, string $statusFilter, stri
 <div class="page-actions">
     <a class="btn btn-secondary" href="<?= url('/dashboard') ?>">Back to Dashboard</a>
 </div>
+
+<?php if (!empty($flashSuccess)): ?>
+    <div class="alert-success"><?= htmlspecialchars((string)$flashSuccess, ENT_QUOTES, 'UTF-8') ?></div>
+<?php endif; ?>
+<?php if (!empty($flashError)): ?>
+    <div class="alert-error"><?= htmlspecialchars((string)$flashError, ENT_QUOTES, 'UTF-8') ?></div>
+<?php endif; ?>
 
 <div class="toolbar-card">
     <form method="GET" action="<?= url('/invoices') ?>" class="toolbar-form invoices-toolbar-form">
@@ -231,6 +252,12 @@ function invoices_page_url(int $page, string $search, string $statusFilter, stri
                         <td><?= htmlspecialchars($inv['customer_name'] ?? '') ?></td>
                         <td>
                             ₱<?= number_format((float)($inv['amount'] ?? 0), 2) ?>
+                            <?php if ((float)($inv['installment_amount'] ?? 0) > 0): ?>
+                                <div class="helper-text" style="margin:2px 0 0;">
+                                    Plan ₱<?= number_format((float)($inv['plan_amount'] ?? 0), 2) ?>
+                                    + Install ₱<?= number_format((float)($inv['installment_amount'] ?? 0), 2) ?>
+                                </div>
+                            <?php endif; ?>
                             <?php if ((float)($inv['vat_amount'] ?? 0) > 0): ?>
                                 <div class="helper-text" style="margin:2px 0 0;">
                                     incl. <?= number_format((float)($inv['vat_rate'] ?? 12), 0) ?>% VAT
@@ -248,6 +275,29 @@ function invoices_page_url(int $page, string $search, string $statusFilter, stri
                         <td class="actions">
                             <a class="btn btn-small" href="<?= url('/payments/create') ?>?invoice_id=<?= (int)($inv['id'] ?? 0) ?>">View</a>
                             <a class="btn btn-small btn-secondary" href="<?= url('/invoices/pdf') ?>?id=<?= (int)($inv['id'] ?? 0) ?>">Download PDF</a>
+                            <?php if ((float)($inv['vat_amount'] ?? 0) > 0): ?>
+                                <?php if (!empty($inv['official_receipt_path'])): ?>
+                                    <a class="btn btn-small btn-secondary" href="<?= url('/invoices/official-receipt') ?>?id=<?= (int)($inv['id'] ?? 0) ?>">View Official Receipt</a>
+                                <?php endif; ?>
+                                <form
+                                    method="POST"
+                                    action="<?= url('/invoices/official-receipt') ?>"
+                                    enctype="multipart/form-data"
+                                    class="or-attach-form"
+                                >
+                                    <?= csrf_field() ?>
+                                    <input type="hidden" name="invoice_id" value="<?= (int)($inv['id'] ?? 0) ?>">
+                                    <input
+                                        type="file"
+                                        name="official_receipt"
+                                        accept=".pdf,.jpg,.jpeg,.png,.webp"
+                                        required
+                                    >
+                                    <button type="submit" class="btn btn-small">
+                                        <?= !empty($inv['official_receipt_path']) ? 'Replace OR' : 'Attach OR' ?>
+                                    </button>
+                                </form>
+                            <?php endif; ?>
                         </td>
                     </tr>
                 <?php endforeach; ?>

@@ -20,6 +20,10 @@ if (file_exists(__DIR__ . '/../Services/BillingCycleService.php')) {
     require_once __DIR__ . '/../Services/BillingCycleService.php';
 }
 
+if (file_exists(__DIR__ . '/../Services/OmadaNetworkAccessService.php')) {
+    require_once __DIR__ . '/../Services/OmadaNetworkAccessService.php';
+}
+
 class PaymentController
 {
     private function db()
@@ -123,6 +127,10 @@ class PaymentController
 
         $db = $this->db();
 
+        if (class_exists('BillingCycleService')) {
+            BillingCycleService::ensureSchema($db);
+        }
+
         $page = (int)($_GET['page'] ?? 1);
         $search = trim((string)($_GET['search'] ?? ''));
         $statusFilter = strtoupper(trim((string)($_GET['status'] ?? '')));
@@ -210,6 +218,8 @@ class PaymentController
             SELECT
                 payments.*,
                 invoices.id AS invoice_number,
+                invoices.vat_amount,
+                invoices.official_receipt_path,
                 customers.full_name AS customer_name
             FROM payments
             LEFT JOIN invoices ON payments.invoice_id = invoices.id
@@ -230,9 +240,15 @@ class PaymentController
 
         $payments = $stmt->fetchAll();
 
+        $flashSuccess = $_SESSION['payment_flash_success'] ?? null;
+        $flashError = $_SESSION['payment_flash_error'] ?? null;
+        unset($_SESSION['payment_flash_success'], $_SESSION['payment_flash_error']);
+
         View::render('payments/index', [
             'title' => 'Payments',
             'payments' => $payments,
+            'flashSuccess' => $flashSuccess,
+            'flashError' => $flashError,
             'page' => $page,
             'perPage' => $perPage,
             'totalRows' => $totalRows,
@@ -262,6 +278,10 @@ class PaymentController
                 die('Customer account is not linked properly.');
             }
 
+            if (class_exists('BillingCycleService')) {
+                BillingCycleService::markOverdueInvoices($db);
+            }
+
             $stmt = $db->prepare("
                 SELECT
                     c.id AS customer_id,
@@ -269,20 +289,10 @@ class PaymentController
                     c.email,
                     c.phone,
                     c.address,
+                    c.vat_inclusive,
                     p.name AS plan_name,
                     p.speed,
-                    i.id AS invoice_id,
-                    i.amount,
-                    i.subtotal,
-                    i.vat_rate,
-                    i.vat_amount,
-                    i.status,
-                    i.due_date,
-                    i.billing_period_start,
-                    i.billing_period_end,
-                    i.is_prorated,
-                    i.coverage_days,
-                    i.created_at
+                    s.billing_type
                 FROM customers c
                 LEFT JOIN subscriptions s
                     ON s.id = (
@@ -296,20 +306,57 @@ class PaymentController
                         LIMIT 1
                     )
                 LEFT JOIN plans p ON p.id = s.plan_id
-                LEFT JOIN invoices i
-                    ON i.id = (
-                        SELECT ii.id
-                        FROM invoices ii
-                        WHERE ii.customer_id = c.id
-                          AND ii.status IN ('ISSUED', 'OVERDUE')
-                        ORDER BY ii.id DESC
-                        LIMIT 1
-                    )
                 WHERE c.id = ?
                 LIMIT 1
             ");
             $stmt->execute([$customerId]);
-            $invoice = $stmt->fetch();
+            $profile = $stmt->fetch() ?: [];
+
+            $stmt = $db->prepare("
+                SELECT
+                    i.id AS invoice_id,
+                    i.amount,
+                    i.subtotal,
+                    i.vat_rate,
+                    i.vat_amount,
+                    i.plan_amount,
+                    i.installment_amount,
+                    i.official_receipt_path,
+                    i.status,
+                    i.due_date,
+                    i.billing_period_start,
+                    i.billing_period_end,
+                    i.is_prorated,
+                    i.coverage_days,
+                    i.created_at
+                FROM invoices i
+                WHERE i.customer_id = ?
+                  AND i.status IN ('ISSUED', 'OVERDUE')
+                  AND UPPER(COALESCE(i.status, '')) NOT IN ('VOID', 'CANCELLED')
+                ORDER BY i.due_date ASC, i.id ASC
+            ");
+            $stmt->execute([$customerId]);
+            $openInvoices = $stmt->fetchAll();
+
+            $selectedInvoiceId = (int)($_GET['invoice_id'] ?? 0);
+            $selectedOpen = null;
+            foreach ($openInvoices as $openRow) {
+                if ($selectedInvoiceId > 0 && (int)($openRow['invoice_id'] ?? 0) === $selectedInvoiceId) {
+                    $selectedOpen = $openRow;
+                    break;
+                }
+            }
+            if ($selectedOpen === null && !empty($openInvoices)) {
+                $selectedOpen = $openInvoices[0];
+                $selectedInvoiceId = (int)($selectedOpen['invoice_id'] ?? 0);
+            }
+
+            $invoice = $profile;
+            if ($selectedOpen) {
+                $invoice = array_merge($profile, $selectedOpen);
+            } else {
+                $invoice['invoice_id'] = 0;
+            }
 
             $summary = [
                 'balance_due' => 0,
@@ -365,6 +412,37 @@ class PaymentController
             $stmt->execute([$customerId]);
             $history = $stmt->fetchAll();
 
+            $stmt = $db->prepare("
+                SELECT
+                    id,
+                    amount,
+                    subtotal,
+                    vat_rate,
+                    vat_amount,
+                    plan_amount,
+                    installment_amount,
+                    status,
+                    due_date,
+                    billing_period_start,
+                    billing_period_end,
+                    is_prorated,
+                    coverage_days,
+                    official_receipt_path
+                FROM invoices
+                WHERE customer_id = ?
+                  AND UPPER(COALESCE(status, '')) NOT IN ('VOID', 'CANCELLED')
+                ORDER BY id DESC
+            ");
+            $stmt->execute([$customerId]);
+            $invoiceHistory = $stmt->fetchAll();
+
+            $officialReceipts = [];
+            foreach ($invoiceHistory as $billRow) {
+                if ((float)($billRow['vat_amount'] ?? 0) > 0) {
+                    $officialReceipts[] = $billRow;
+                }
+            }
+
             $paymentMethods = class_exists('PaymentMethodService')
                 ? PaymentMethodService::getAll($db, true)
                 : [];
@@ -372,8 +450,11 @@ class PaymentController
             View::render('payments/customer_portal', [
                 'title' => 'My Payment Portal',
                 'invoice' => $invoice,
+                'openInvoices' => $openInvoices,
+                'invoiceHistory' => $invoiceHistory,
                 'summary' => $summary,
                 'history' => $history,
+                'officialReceipts' => $officialReceipts,
                 'paymentError' => $paymentError,
                 'paymentMethods' => $paymentMethods,
             ]);
@@ -433,6 +514,13 @@ class PaymentController
         $method = $this->normalizePaymentMethod(trim((string)($_POST['method'] ?? 'GCASH')));
         $status = 'PENDING';
         $receiptPath = null;
+
+        if (!$this->isCustomer()) {
+            $postedStatus = strtoupper(trim((string)($_POST['status'] ?? 'PENDING')));
+            if (in_array($postedStatus, ['PENDING', 'VERIFIED'], true)) {
+                $status = $postedStatus;
+            }
+        }
 
         if ($invoiceId <= 0) {
             $this->setPaymentError('Please select a valid invoice.');
@@ -584,7 +672,8 @@ class PaymentController
             ActivityLogger::logSession(
                 'Payments',
                 'CREATE',
-                'Recorded payment ID ' . $paymentId . ' for invoice ID ' . $invoiceId . '.'
+                'Recorded payment ID ' . $paymentId . ' for invoice ID ' . $invoiceId
+                    . ' (' . $status . ').'
             );
         }
 
@@ -597,6 +686,15 @@ class PaymentController
                 $amount,
                 $method
             );
+        }
+
+        if (!$this->isCustomer() && $status === 'VERIFIED') {
+            $stmt = $db->prepare('SELECT * FROM payments WHERE id = ? LIMIT 1');
+            $stmt->execute([$paymentId]);
+            $payment = $stmt->fetch();
+            if ($payment) {
+                $this->afterPaymentVerified($db, $payment);
+            }
         }
 
         if ($this->isCustomer()) {
@@ -633,6 +731,14 @@ class PaymentController
         $stmt = $db->prepare("UPDATE payments SET status = 'VERIFIED' WHERE id = ?");
         $stmt->execute([$paymentId]);
 
+        $payment['status'] = 'VERIFIED';
+        $this->afterPaymentVerified($db, $payment);
+
+        $this->redirectTo('/payments');
+    }
+
+    private function afterPaymentVerified(PDO $db, array $payment): void
+    {
         $stmt = $db->prepare("UPDATE invoices SET status = 'PAID' WHERE id = ?");
         $stmt->execute([$payment['invoice_id']]);
 
@@ -640,7 +746,7 @@ class PaymentController
             ActivityLogger::logSession(
                 'Payments',
                 'VERIFY',
-                'Verified payment ID ' . $paymentId . ' for invoice ID ' . $payment['invoice_id'] . '.'
+                'Verified payment ID ' . (int)($payment['id'] ?? 0) . ' for invoice ID ' . $payment['invoice_id'] . '.'
             );
         }
 
@@ -654,45 +760,70 @@ class PaymentController
         $stmt->execute([$payment['invoice_id']]);
         $invoiceData = $stmt->fetch();
 
-        if ($invoiceData) {
-            $customerId = (int)($invoiceData['customer_id'] ?? 0);
-            $invoiceId = (int)($invoiceData['invoice_id'] ?? 0);
-            $recipientEmail = class_exists('EmailAlertService')
-                ? EmailAlertService::resolveCustomerEmail($db, $customerId)
-                : trim((string)($invoiceData['email'] ?? ''));
-            $customerName = class_exists('EmailAlertService')
-                ? EmailAlertService::resolveCustomerName($db, $customerId, (string)($invoiceData['full_name'] ?? 'Customer'))
-                : ((string)($invoiceData['full_name'] ?? 'Customer'));
-
-            $amountPaid = isset($payment['amount']) ? number_format((float)$payment['amount'], 2) : '0.00';
-            $dateVerified = date('F j, Y');
-
-            $subject = 'Payment Processed — Official Receipt';
-            $message = 'Hello ' . $customerName . ', your payment for Invoice #' . $invoiceId . ' has been verified. Your official paid invoice/receipt is now available in your billing portal. Your account is up to date.';
-
-            $stmt = $db->prepare("
-                INSERT INTO notifications (customer_id, invoice_id, type, recipient_email, subject, message, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            ");
-            $stmt->execute([
-                $customerId,
-                $invoiceId,
-                'PAYMENT_CONFIRMED',
-                $recipientEmail,
-                $subject,
-                $message,
-                'PENDING'
-            ]);
-
-            $notificationId = $db->lastInsertId();
-
-            if (!empty($recipientEmail) && class_exists('MailService')) {
-                $mailSent = false;
-
+        if ($invoiceData && class_exists('OmadaNetworkAccessService')) {
+            $paidCustomerId = (int)($invoiceData['customer_id'] ?? 0);
+            if ($paidCustomerId > 0) {
                 try {
-                    $mailService = new MailService();
+                    $netResult = OmadaNetworkAccessService::restoreIfFullyPaid($db, $paidCustomerId);
+                    if (class_exists('ActivityLogger')) {
+                        ActivityLogger::logSession(
+                            'Customers',
+                            'NETWORK_RESTORE',
+                            'Auto-restore after payment verify for customer ID ' . $paidCustomerId
+                                . ': ' . (string)($netResult['message'] ?? '')
+                        );
+                    }
+                } catch (Throwable $e) {
+                    error_log('PaymentController@afterPaymentVerified Omada restore: ' . $e->getMessage());
+                }
+            }
+        }
 
-                    $emailBody = '
+        if (!$invoiceData) {
+            return;
+        }
+
+        $customerId = (int)($invoiceData['customer_id'] ?? 0);
+        $invoiceId = (int)($invoiceData['invoice_id'] ?? 0);
+        $recipientEmail = class_exists('EmailAlertService')
+            ? EmailAlertService::resolveCustomerEmail($db, $customerId)
+            : trim((string)($invoiceData['email'] ?? ''));
+        $customerName = class_exists('EmailAlertService')
+            ? EmailAlertService::resolveCustomerName($db, $customerId, (string)($invoiceData['full_name'] ?? 'Customer'))
+            : ((string)($invoiceData['full_name'] ?? 'Customer'));
+
+        $amountPaid = isset($payment['amount']) ? number_format((float)$payment['amount'], 2) : '0.00';
+        $dateVerified = date('F j, Y');
+
+        $subject = 'Payment Processed';
+        $message = 'Hello ' . $customerName . ', your payment for Invoice #' . $invoiceId
+            . ' has been verified. You can download your invoice PDF in the billing portal.'
+            . ' If your bill is VAT inclusive, your Official Receipt will appear there after FusionLink attaches it.'
+            . ' Your account is up to date.';
+
+        $stmt = $db->prepare("
+            INSERT INTO notifications (customer_id, invoice_id, type, recipient_email, subject, message, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ");
+        $stmt->execute([
+            $customerId,
+            $invoiceId,
+            'PAYMENT_CONFIRMED',
+            $recipientEmail,
+            $subject,
+            $message,
+            'PENDING'
+        ]);
+
+        $notificationId = $db->lastInsertId();
+
+        if (!empty($recipientEmail) && class_exists('MailService')) {
+            $mailSent = false;
+
+            try {
+                $mailService = new MailService();
+
+                $emailBody = '
                         <div style="max-width:700px;margin:0 auto;font-family:Arial,sans-serif;background:#ffffff;border:1px solid #dbe4f0;">
                             <div style="background:#0f3d91;color:#ffffff;padding:20px 24px;text-align:center;">
                                 <h1 style="margin:0;font-size:28px;">FUSIONLINK</h1>
@@ -703,11 +834,11 @@ class PaymentController
                                 <p style="margin-top:0;">Hello ' . htmlspecialchars($customerName, ENT_QUOTES, 'UTF-8') . ',</p>
 
                                 <p>Your payment has been successfully verified.</p>
-                                <p>Thank you for your recent payment.</p>
+                                <p>Thank you for your recent payment. You can download this invoice PDF from your billing portal. If the bill is VAT inclusive, your Official Receipt will appear there after FusionLink attaches it.</p>
 
                                 <div style="border:1px solid #d1d5db;background:#f8fafc;padding:18px 20px;margin:24px 0;">
                                     <h2 style="margin:0 0 14px 0;font-size:18px;color:#0f172a;">PAYMENT DETAILS</h2>
-                                    <p style="margin:6px 0;"><strong>Invoice Number:</strong> #' . htmlspecialchars($invoiceId, ENT_QUOTES, 'UTF-8') . '</p>
+                                    <p style="margin:6px 0;"><strong>Invoice Number:</strong> #' . htmlspecialchars((string)$invoiceId, ENT_QUOTES, 'UTF-8') . '</p>
                                     <p style="margin:6px 0;"><strong>Payment Status:</strong> VERIFIED</p>
                                     <p style="margin:6px 0;"><strong>Date Verified:</strong> ' . htmlspecialchars($dateVerified, ENT_QUOTES, 'UTF-8') . '</p>
                                     <p style="margin:6px 0;"><strong>Amount Paid:</strong> PHP ' . htmlspecialchars($amountPaid, ENT_QUOTES, 'UTF-8') . '</p>
@@ -723,35 +854,32 @@ class PaymentController
                                     <p style="margin:4px 0;">Phone: +63 900 123 4567</p>
                                 </div>
 
-                                <p style="margin-top:24px;">Thank you for choosing ISP Billing Lite.</p>
+                                <p style="margin-top:24px;">Thank you for choosing FusionLink.</p>
                             </div>
                         </div>
                     ';
 
-                    $bcc = class_exists('EmailAlertService')
-                        ? EmailAlertService::administratorBccList($db, $recipientEmail)
-                        : [];
-                    $mailSent = $mailService->send(
-                        $recipientEmail,
-                        $customerName,
-                        $subject,
-                        $emailBody,
-                        $bcc
-                    );
-                } catch (Throwable $e) {
-                    error_log('PaymentController mail error: ' . $e->getMessage());
-                    $mailSent = false;
-                }
-
-                $stmt = $db->prepare("UPDATE notifications SET status = ? WHERE id = ?");
-                $stmt->execute([
-                    $mailSent ? 'SENT' : 'FAILED',
-                    $notificationId
-                ]);
+                $bcc = class_exists('EmailAlertService')
+                    ? EmailAlertService::administratorBccList($db, $recipientEmail)
+                    : [];
+                $mailSent = $mailService->send(
+                    $recipientEmail,
+                    $customerName,
+                    $subject,
+                    $emailBody,
+                    $bcc
+                );
+            } catch (Throwable $e) {
+                error_log('PaymentController mail error: ' . $e->getMessage());
+                $mailSent = false;
             }
-        }
 
-        $this->redirectTo('/payments');
+            $stmt = $db->prepare("UPDATE notifications SET status = ? WHERE id = ?");
+            $stmt->execute([
+                $mailSent ? 'SENT' : 'FAILED',
+                $notificationId
+            ]);
+        }
     }
 
     public function reject()

@@ -256,11 +256,42 @@ class ReferralService
         $subtotal = array_key_exists('subtotal', $meta) ? round((float)$meta['subtotal'], 2) : null;
         $vatRate = array_key_exists('vat_rate', $meta) ? round((float)$meta['vat_rate'], 2) : null;
         $vatAmount = array_key_exists('vat_amount', $meta) ? round((float)$meta['vat_amount'], 2) : null;
+        $planAmount = array_key_exists('plan_amount', $meta) ? round((float)$meta['plan_amount'], 2) : null;
+        $installmentAmount = array_key_exists('installment_amount', $meta) ? round((float)$meta['installment_amount'], 2) : null;
+        $installmentId = array_key_exists('installment_id', $meta) && $meta['installment_id']
+            ? (int)$meta['installment_id']
+            : null;
 
         $hasPeriodColumns = self::columnExists($pdo, 'invoices', 'billing_period_start');
         $hasVatColumns = self::columnExists($pdo, 'invoices', 'vat_amount');
+        $hasInstallmentColumns = self::columnExists($pdo, 'invoices', 'installment_amount');
 
-        if ($hasPeriodColumns && $hasVatColumns) {
+        if ($hasPeriodColumns && $hasVatColumns && $hasInstallmentColumns) {
+            $stmt = $pdo->prepare('
+                INSERT INTO invoices (
+                    customer_id, amount, subtotal, vat_rate, vat_amount, referral_credit_applied, due_date, status,
+                    billing_period_start, billing_period_end, is_prorated, coverage_days,
+                    plan_amount, installment_amount, installment_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ');
+            $stmt->execute([
+                $customerId,
+                $finalAmount,
+                $subtotal,
+                $vatRate,
+                $vatAmount,
+                $credit,
+                $dueDate,
+                $status,
+                $periodStart,
+                $periodEnd,
+                $isProrated,
+                $coverageDays,
+                $planAmount,
+                $installmentAmount,
+                $installmentId,
+            ]);
+        } elseif ($hasPeriodColumns && $hasVatColumns) {
             $stmt = $pdo->prepare('
                 INSERT INTO invoices (
                     customer_id, amount, subtotal, vat_rate, vat_amount, referral_credit_applied, due_date, status,
@@ -325,6 +356,9 @@ class ReferralService
             'subtotal' => $subtotal,
             'vat_rate' => $vatRate,
             'vat_amount' => $vatAmount,
+            'plan_amount' => $planAmount,
+            'installment_amount' => $installmentAmount,
+            'installment_id' => $installmentId,
         ];
     }
 

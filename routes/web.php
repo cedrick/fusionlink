@@ -40,6 +40,9 @@ if (isset($_SESSION['user']) && (($_SESSION['user']['role'] ?? '') === 'ROLE_CUS
     $allowed = [
         '/payments/create',
         '/payments/store',
+        '/invoices/official-receipt',
+        '/invoices/pdf',
+        '/account/password',
         '/logout',
         '/page',
         '/page/apply',
@@ -115,6 +118,16 @@ $router->post('/verify-otp', function () {
 
 $router->post('/verify-otp/resend', function () {
     (new AuthController())->resendOtp();
+});
+
+$router->get('/account/password', function () use ($requireLogin) {
+    $requireLogin();
+    (new AuthController())->changePasswordForm();
+});
+
+$router->post('/account/password', function () use ($requireLogin) {
+    $requireLogin();
+    (new AuthController())->changePassword();
 });
 
 $router->get('/logout', function () {
@@ -208,6 +221,11 @@ $router->get('/settings', function () use ($requireLogin) {
 $router->post('/settings/update', function () use ($requireLogin) {
     $requireLogin();
     (new SettingController())->update();
+});
+
+$router->post('/settings/test-omada', function () use ($requireLogin) {
+    $requireLogin();
+    (new SettingController())->testOmada();
 });
 
 $router->post('/settings/test-email', function () use ($requireLogin) {
@@ -354,6 +372,11 @@ $router->post('/customers/activate-portal', function () {
     (new CustomerController())->activatePortal();
 });
 
+$router->post('/customers/reset-portal-password', function () {
+    if (!isset($_SESSION['user'])) { redirect('/login'); }
+    (new CustomerController())->resetPortalPassword();
+});
+
 $router->get('/customers/import', function () {
     if (!isset($_SESSION['user'])) { redirect('/login'); }
     (new CustomerController())->import();
@@ -362,6 +385,26 @@ $router->get('/customers/import', function () {
 $router->post('/customers/import', function () {
     if (!isset($_SESSION['user'])) { redirect('/login'); }
     (new CustomerController())->processImport();
+});
+
+$router->post('/customers/installment/save', function () {
+    if (!isset($_SESSION['user'])) { redirect('/login'); }
+    (new CustomerController())->saveInstallment();
+});
+
+$router->post('/customers/installment/cancel', function () {
+    if (!isset($_SESSION['user'])) { redirect('/login'); }
+    (new CustomerController())->cancelInstallment();
+});
+
+$router->post('/customers/network/suspend', function () {
+    if (!isset($_SESSION['user'])) { redirect('/login'); }
+    (new CustomerController())->suspendNetwork();
+});
+
+$router->post('/customers/network/restore', function () {
+    if (!isset($_SESSION['user'])) { redirect('/login'); }
+    (new CustomerController())->restoreNetwork();
 });
 
 // ---------------- Bookings ----------------
@@ -535,6 +578,16 @@ $router->get('/invoices/pdf', function () use ($requireLogin) {
 $router->get('/invoices/email', function () use ($requireLogin) {
     $requireLogin();
     (new InvoiceController())->emailInvoice();
+});
+
+$router->post('/invoices/official-receipt', function () use ($requireLogin) {
+    $requireLogin();
+    (new InvoiceController())->attachOfficialReceipt();
+});
+
+$router->get('/invoices/official-receipt', function () use ($requireLogin) {
+    $requireLogin();
+    (new InvoiceController())->downloadOfficialReceipt();
 });
 
 // ---------------- Payments ----------------

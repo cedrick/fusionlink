@@ -1,7 +1,7 @@
 #!/usr/bin/env php
 <?php
 /**
- * Unattended database backup for FusionLink.
+ * Unattended database + receipt/OR file backup for FusionLink.
  *
  * Usage:
  *   php bin/db-backup.php
@@ -47,7 +47,7 @@ try {
             'SYSTEM',
             'Settings',
             'BACKUP',
-            'Automatic DB backup created: ' . $created['name']
+            'Automatic backup created: ' . $created['name']
                 . ' (pruned ' . $pruned['deleted'] . ', kept ' . $pruned['kept'] . ')'
         );
     }

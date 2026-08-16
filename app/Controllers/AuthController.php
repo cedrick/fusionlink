@@ -760,4 +760,97 @@ class AuthController
             redirect('/verify-otp?error=' . urlencode('Unable to resend OTP right now.'));
         }
     }
+
+    public function changePasswordForm(): void
+    {
+        if (empty($_SESSION['user'])) {
+            redirect('/login');
+            exit;
+        }
+
+        $error = $_SESSION['password_error'] ?? null;
+        $success = $_SESSION['password_success'] ?? null;
+        unset($_SESSION['password_error'], $_SESSION['password_success']);
+
+        View::render('account/password', [
+            'title' => 'Change Password',
+            'error' => $error,
+            'success' => $success,
+            'isCustomer' => (($_SESSION['user']['role'] ?? '') === 'ROLE_CUSTOMER'),
+        ]);
+    }
+
+    public function changePassword(): void
+    {
+        if (empty($_SESSION['user'])) {
+            redirect('/login');
+            exit;
+        }
+
+        $userId = (int)($_SESSION['user']['id'] ?? 0);
+        $current = (string)($_POST['current_password'] ?? '');
+        $new = (string)($_POST['new_password'] ?? '');
+        $confirm = (string)($_POST['confirm_password'] ?? '');
+
+        $fail = static function (string $message): void {
+            $_SESSION['password_error'] = $message;
+            redirect('/account/password');
+            exit;
+        };
+
+        if ($userId <= 0) {
+            $fail('Your account is not linked properly.');
+        }
+
+        if ($current === '' || $new === '' || $confirm === '') {
+            $fail('Current password and new password are required.');
+        }
+
+        if (strlen($new) < 8) {
+            $fail('New password must be at least 8 characters.');
+        }
+
+        if ($new !== $confirm) {
+            $fail('New password and confirmation do not match.');
+        }
+
+        if (hash_equals($current, $new)) {
+            $fail('New password must be different from the current password.');
+        }
+
+        try {
+            $pdo = Database::connect();
+            $stmt = $pdo->prepare('SELECT id, password_hash FROM users WHERE id = ? LIMIT 1');
+            $stmt->execute([$userId]);
+            $user = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$user) {
+                $fail('Account not found.');
+            }
+
+            $storedHash = (string)($user['password_hash'] ?? '');
+            $currentOk = $storedHash !== '' && password_verify($current, $storedHash);
+            if (!$currentOk && $storedHash !== '' && hash_equals($storedHash, hash('sha256', $current))) {
+                $currentOk = true;
+            }
+
+            if (!$currentOk) {
+                $fail('Current password is incorrect.');
+            }
+
+            $update = $pdo->prepare('UPDATE users SET password_hash = ? WHERE id = ?');
+            $update->execute([password_hash($new, PASSWORD_DEFAULT), $userId]);
+
+            if (class_exists('ActivityLogger')) {
+                ActivityLogger::logSession('Auth', 'PASSWORD_CHANGE', 'User changed their portal password.');
+            }
+
+            $_SESSION['password_success'] = 'Password updated. Use the new password the next time you sign in.';
+            redirect('/account/password');
+            exit;
+        } catch (Throwable $e) {
+            error_log('AuthController@changePassword error: ' . $e->getMessage());
+            $fail('Unable to change password right now.');
+        }
+    }
 }

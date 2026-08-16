@@ -65,6 +65,53 @@ class BillingCycleService
         if (!self::columnExists($pdo, 'invoices', 'vat_amount')) {
             $pdo->exec('ALTER TABLE invoices ADD COLUMN vat_amount DECIMAL(12,2) NULL AFTER vat_rate');
         }
+        if (!self::columnExists($pdo, 'invoices', 'plan_amount')) {
+            $pdo->exec('ALTER TABLE invoices ADD COLUMN plan_amount DECIMAL(12,2) NULL AFTER coverage_days');
+        }
+        if (!self::columnExists($pdo, 'invoices', 'installment_amount')) {
+            $pdo->exec('ALTER TABLE invoices ADD COLUMN installment_amount DECIMAL(12,2) NULL AFTER plan_amount');
+        }
+        if (!self::columnExists($pdo, 'invoices', 'installment_id')) {
+            $pdo->exec('ALTER TABLE invoices ADD COLUMN installment_id INT UNSIGNED NULL AFTER installment_amount');
+        }
+
+        if (file_exists(__DIR__ . '/OfficialReceiptService.php')) {
+            require_once __DIR__ . '/OfficialReceiptService.php';
+            OfficialReceiptService::ensureSchema($pdo);
+        }
+
+        if (file_exists(__DIR__ . '/InstallationInstallmentService.php')) {
+            require_once __DIR__ . '/InstallationInstallmentService.php';
+            InstallationInstallmentService::ensureSchema($pdo);
+        }
+    }
+
+    /**
+     * Compose plan + optional installation installment into one net bill amount.
+     *
+     * @return array{plan_amount:float,installment_amount:float,installment_id:int,net:float}
+     */
+    public static function composeBillAmounts(PDO $pdo, int $customerId, float $planAmount): array
+    {
+        self::ensureSchema($pdo);
+        $planAmount = round(max(0, $planAmount), 2);
+        $installmentAmount = 0.0;
+        $installmentId = 0;
+
+        if (class_exists('InstallationInstallmentService')) {
+            $peek = InstallationInstallmentService::peekCharge($pdo, $customerId);
+            if ($peek) {
+                $installmentAmount = (float)$peek['amount'];
+                $installmentId = (int)$peek['id'];
+            }
+        }
+
+        return [
+            'plan_amount' => $planAmount,
+            'installment_amount' => $installmentAmount,
+            'installment_id' => $installmentId,
+            'net' => round($planAmount + $installmentAmount, 2),
+        ];
     }
 
     public static function getVatRate(PDO $pdo): float
@@ -260,12 +307,16 @@ class BillingCycleService
         }
 
         $net = round(max(0, $monthlyPrice), 2);
+        $composed = self::composeBillAmounts($pdo, $customerId, $net);
         $dueDate = self::dueDateForCoverageEnd($pdo, $period['end']);
         $days = (int)date('t', strtotime($period['start']));
 
         $invoice = self::createInvoice($pdo, [
             'customer_id' => $customerId,
-            'amount' => $net,
+            'amount' => $composed['net'],
+            'plan_amount' => $composed['plan_amount'],
+            'installment_amount' => $composed['installment_amount'],
+            'installment_id' => $composed['installment_id'],
             'due_date' => $dueDate,
             'status' => 'ISSUED',
             'billing_period_start' => $period['start'],
@@ -274,11 +325,23 @@ class BillingCycleService
             'coverage_days' => $days,
         ]);
 
+        if (($invoice['id'] ?? 0) > 0 && $composed['installment_id'] > 0 && $composed['installment_amount'] > 0
+            && class_exists('InstallationInstallmentService')
+        ) {
+            InstallationInstallmentService::applyCharge(
+                $pdo,
+                $composed['installment_id'],
+                $composed['installment_amount']
+            );
+        }
+
         return $invoice + [
             'due_date' => $dueDate,
             'billing_period_start' => $period['start'],
             'billing_period_end' => $period['end'],
             'is_prorated' => false,
+            'plan_amount' => $composed['plan_amount'],
+            'installment_amount' => $composed['installment_amount'],
             'skipped' => false,
         ];
     }
@@ -406,6 +469,7 @@ class BillingCycleService
             SELECT id
             FROM invoices
             WHERE customer_id = ?
+              AND UPPER(COALESCE(status, '')) NOT IN ('VOID', 'CANCELLED')
               AND (
                     (billing_period_start IS NOT NULL AND billing_period_end IS NOT NULL
                         AND billing_period_start = ? AND billing_period_end = ?)
@@ -507,11 +571,15 @@ class BillingCycleService
             $netAmount = !empty($coverage['is_prorated'])
                 ? self::calculateProratedAmount($planPrice, $startDate)
                 : round($planPrice, 2);
+            $composed = self::composeBillAmounts($pdo, $customerId, $netAmount);
             $dueDate = self::dueDateForCoverageEnd($pdo, $coverage['end']);
 
             $invoice = self::createInvoice($pdo, [
                 'customer_id' => $customerId,
-                'amount' => $netAmount,
+                'amount' => $composed['net'],
+                'plan_amount' => $composed['plan_amount'],
+                'installment_amount' => $composed['installment_amount'],
+                'installment_id' => $composed['installment_id'],
                 'due_date' => $dueDate,
                 'status' => 'ISSUED',
                 'billing_period_start' => $coverage['start'],
@@ -519,6 +587,16 @@ class BillingCycleService
                 'is_prorated' => !empty($coverage['is_prorated']) ? 1 : 0,
                 'coverage_days' => (int)($coverage['coverage_days'] ?? 0),
             ]);
+
+            if (($invoice['id'] ?? 0) > 0 && $composed['installment_id'] > 0 && $composed['installment_amount'] > 0
+                && class_exists('InstallationInstallmentService')
+            ) {
+                InstallationInstallmentService::applyCharge(
+                    $pdo,
+                    $composed['installment_id'],
+                    $composed['installment_amount']
+                );
+            }
 
             if (($invoice['id'] ?? 0) > 0) {
                 $row = $invoice + [
@@ -531,9 +609,11 @@ class BillingCycleService
                     'full_name' => (string)($subscription['full_name'] ?? 'Customer'),
                     'email' => (string)($subscription['email'] ?? ''),
                     'amount' => (float)($invoice['amount'] ?? 0),
-                    'subtotal' => (float)($invoice['subtotal'] ?? $netAmount),
+                    'subtotal' => (float)($invoice['subtotal'] ?? $composed['net']),
                     'vat_rate' => (float)($invoice['vat_rate'] ?? 0),
                     'vat_amount' => (float)($invoice['vat_amount'] ?? 0),
+                    'plan_amount' => $composed['plan_amount'],
+                    'installment_amount' => $composed['installment_amount'],
                 ];
                 $generated[] = $row;
 
@@ -562,6 +642,16 @@ class BillingCycleService
         $isProrated = !empty($input['is_prorated']) ? 1 : 0;
         $coverageDays = isset($input['coverage_days']) ? (int)$input['coverage_days'] : null;
         $skipVat = !empty($input['skip_vat']);
+        $planAmount = array_key_exists('plan_amount', $input)
+            ? round((float)$input['plan_amount'], 2)
+            : $netAmount;
+        $installmentAmount = array_key_exists('installment_amount', $input)
+            ? round((float)$input['installment_amount'], 2)
+            : 0.0;
+        $installmentId = isset($input['installment_id']) ? (int)$input['installment_id'] : null;
+        if ($installmentId !== null && $installmentId <= 0) {
+            $installmentId = null;
+        }
 
         if ($customerId <= 0 || $dueDate === '') {
             return ['id' => 0, 'amount' => 0.0, 'referral_credit_applied' => 0.0];
@@ -585,13 +675,17 @@ class BillingCycleService
                 'subtotal' => $vat['subtotal'],
                 'vat_rate' => $vat['vat_rate'],
                 'vat_amount' => $vat['vat_amount'],
+                'plan_amount' => $planAmount,
+                'installment_amount' => $installmentAmount,
+                'installment_id' => $installmentId,
             ]);
         } else {
             $stmt = $pdo->prepare("
                 INSERT INTO invoices (
                     customer_id, amount, subtotal, vat_rate, vat_amount, due_date, status,
-                    billing_period_start, billing_period_end, is_prorated, coverage_days
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    billing_period_start, billing_period_end, is_prorated, coverage_days,
+                    plan_amount, installment_amount, installment_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ");
             $stmt->execute([
                 $customerId,
@@ -605,6 +699,9 @@ class BillingCycleService
                 $periodEnd !== '' ? $periodEnd : null,
                 $isProrated,
                 $coverageDays,
+                $planAmount,
+                $installmentAmount,
+                $installmentId,
             ]);
             $created = [
                 'id' => (int)$pdo->lastInsertId(),
@@ -617,6 +714,9 @@ class BillingCycleService
             'subtotal' => $vat['subtotal'],
             'vat_rate' => $vat['vat_rate'],
             'vat_amount' => $vat['vat_amount'],
+            'plan_amount' => $planAmount,
+            'installment_amount' => $installmentAmount,
+            'installment_id' => $installmentId,
         ];
     }
 
@@ -634,11 +734,15 @@ class BillingCycleService
         $netAmount = !empty($coverage['is_prorated'])
             ? self::calculateProratedAmount($monthlyPrice, $activationDate)
             : round($monthlyPrice, 2);
+        $composed = self::composeBillAmounts($pdo, $customerId, $netAmount);
         $dueDate = self::dueDateForCoverageEnd($pdo, $coverage['end']);
 
         $invoice = self::createInvoice($pdo, [
             'customer_id' => $customerId,
-            'amount' => $netAmount,
+            'amount' => $composed['net'],
+            'plan_amount' => $composed['plan_amount'],
+            'installment_amount' => $composed['installment_amount'],
+            'installment_id' => $composed['installment_id'],
             'due_date' => $dueDate,
             'status' => 'ISSUED',
             'billing_period_start' => $coverage['start'],
@@ -647,12 +751,24 @@ class BillingCycleService
             'coverage_days' => (int)$coverage['coverage_days'],
         ]);
 
+        if (($invoice['id'] ?? 0) > 0 && $composed['installment_id'] > 0 && $composed['installment_amount'] > 0
+            && class_exists('InstallationInstallmentService')
+        ) {
+            InstallationInstallmentService::applyCharge(
+                $pdo,
+                $composed['installment_id'],
+                $composed['installment_amount']
+            );
+        }
+
         return $invoice + [
             'due_date' => $dueDate,
             'billing_period_start' => $coverage['start'],
             'billing_period_end' => $coverage['end'],
             'is_prorated' => !empty($coverage['is_prorated']),
             'coverage_days' => (int)$coverage['coverage_days'],
+            'plan_amount' => $composed['plan_amount'],
+            'installment_amount' => $composed['installment_amount'],
             'skipped' => false,
         ];
     }
@@ -670,8 +786,20 @@ class BillingCycleService
               AND due_date < ?
         ");
         $stmt->execute([self::today()]);
+        $count = $stmt->rowCount();
 
-        return $stmt->rowCount();
+        if (file_exists(__DIR__ . '/OmadaNetworkAccessService.php')) {
+            require_once __DIR__ . '/OmadaNetworkAccessService.php';
+        }
+        if (class_exists('OmadaNetworkAccessService')) {
+            try {
+                OmadaNetworkAccessService::suspendOverdueCustomers($pdo);
+            } catch (Throwable $e) {
+                error_log('BillingCycleService@markOverdue Omada suspend: ' . $e->getMessage());
+            }
+        }
+
+        return $count;
     }
 
     /**
@@ -903,40 +1031,55 @@ class BillingCycleService
         $vatRate = (float)($invoice['vat_rate'] ?? 0);
         $vatAmount = (float)($invoice['vat_amount'] ?? 0);
         $subtotal = (float)($invoice['subtotal'] ?? 0);
+        $planAmt = (float)($invoice['plan_amount'] ?? 0);
+        $installAmt = (float)($invoice['installment_amount'] ?? 0);
         $vatNote = '';
         if ($vatAmount > 0) {
             $vatNote = ' (incl. ' . number_format($vatRate, 0) . '% VAT ₱' . number_format($vatAmount, 2) . ')';
+        }
+        $installNote = '';
+        if ($installAmt > 0) {
+            $installNote = ' (plan ₱' . number_format($planAmt > 0 ? $planAmt : max(0, (float)$invoice['amount'] - $installAmt), 2)
+                . ' + install ₱' . number_format($installAmt, 2) . ')';
         }
 
         if ($type === 'MONTHLY_BILL') {
             $subject = 'Your monthly bill is ready - ' . $companyName;
             $headline = 'Monthly Bill';
             $message = 'Hello ' . $customerName . ', your bill for ' . $periodLabel
-                . ' is ready. Amount due: ₱' . $amount . $vatNote . '. Due date: ' . $dueDate
+                . ' is ready. Amount due: ₱' . $amount . $installNote . $vatNote . '. Due date: ' . $dueDate
                 . ' (still on time on this date). Please pay via your billing portal.';
         } elseif ($type === 'DUE_REMINDER') {
             $subject = 'Payment due today - ' . $companyName;
             $headline = 'Payment Due Today';
             $message = 'Hello ' . $customerName . ', this is a reminder that Invoice #' . $invoiceId
-                . ' for ₱' . $amount . $vatNote . ' is due today (' . $dueDate . '). Billing period: '
+                . ' for ₱' . $amount . $installNote . $vatNote . ' is due today (' . $dueDate . '). Billing period: '
                 . $periodLabel . '. Please pay today to avoid overdue status tomorrow.';
         } else {
             $subject = 'Overdue invoice notice - ' . $companyName;
             $headline = 'Overdue Invoice';
             $message = 'Hello ' . $customerName . ', Invoice #' . $invoiceId
-                . ' for ₱' . $amount . $vatNote . ' is now overdue (due date was ' . $dueDate
+                . ' for ₱' . $amount . $installNote . $vatNote . ' is now overdue (due date was ' . $dueDate
                 . '). Billing period: ' . $periodLabel . '. Please settle your balance as soon as possible.';
         }
 
         $vatHtml = '';
+        if ($installAmt > 0) {
+            $vatHtml .= '
+            <p><strong>Plan:</strong> ₱' . htmlspecialchars(number_format($planAmt > 0 ? $planAmt : max(0, (float)$invoice['amount'] - $installAmt), 2), ENT_QUOTES, 'UTF-8') . '</p>
+            <p><strong>Installation installment:</strong> ₱' . htmlspecialchars(number_format($installAmt, 2), ENT_QUOTES, 'UTF-8') . '</p>
+            ';
+        }
         if ($vatAmount > 0) {
-            $vatHtml = '
+            $vatHtml .= '
             <p><strong>Subtotal:</strong> ₱' . htmlspecialchars(number_format($subtotal > 0 ? $subtotal : ((float)$invoice['amount'] - $vatAmount), 2), ENT_QUOTES, 'UTF-8') . '</p>
             <p><strong>VAT (' . htmlspecialchars(number_format($vatRate, 0), ENT_QUOTES, 'UTF-8') . '%):</strong> ₱' . htmlspecialchars(number_format($vatAmount, 2), ENT_QUOTES, 'UTF-8') . '</p>
             <p><strong>Total (VAT inclusive):</strong> ₱' . htmlspecialchars($amount, ENT_QUOTES, 'UTF-8') . '</p>
             ';
-        } else {
+        } elseif ($installAmt <= 0) {
             $vatHtml = '<p><strong>Amount:</strong> ₱' . htmlspecialchars($amount, ENT_QUOTES, 'UTF-8') . '</p>';
+        } else {
+            $vatHtml .= '<p><strong>Total:</strong> ₱' . htmlspecialchars($amount, ENT_QUOTES, 'UTF-8') . '</p>';
         }
 
         $html = '

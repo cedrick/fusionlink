@@ -56,6 +56,13 @@ function payments_page_url(int $page, string $search, string $statusFilter, stri
     <a class="btn" href="<?= url('/payments/create') ?>">Record Payment</a>
 </div>
 
+<?php if (!empty($flashSuccess)): ?>
+    <div class="alert-success"><?= htmlspecialchars((string)$flashSuccess, ENT_QUOTES, 'UTF-8') ?></div>
+<?php endif; ?>
+<?php if (!empty($flashError)): ?>
+    <div class="alert-error"><?= htmlspecialchars((string)$flashError, ENT_QUOTES, 'UTF-8') ?></div>
+<?php endif; ?>
+
 <div class="toolbar-card">
     <form method="GET" action="<?= url('/payments') ?>" class="toolbar-form payments-toolbar-form">
         <div class="toolbar-group">
@@ -227,7 +234,25 @@ function payments_page_url(int $page, string $search, string $statusFilter, stri
                                 <input type="hidden" name="payment_id" value="<?= htmlspecialchars($payment['id']) ?>">
                                 <button type="submit" class="btn btn-small btn-danger" onclick="return confirm('Reject this payment?')">Reject</button>
                             </form>
-                        <?php else: ?>
+                        <?php endif; ?>
+                        <?php if ((float)($payment['vat_amount'] ?? 0) > 0): ?>
+                            <?php if (!empty($payment['official_receipt_path'])): ?>
+                                <a class="btn btn-small btn-secondary" href="<?= url('/invoices/official-receipt') ?>?id=<?= (int)($payment['invoice_number'] ?? 0) ?>">View OR</a>
+                            <?php endif; ?>
+                            <form
+                                method="POST"
+                                action="<?= url('/invoices/official-receipt') ?>"
+                                enctype="multipart/form-data"
+                                class="inline-form"
+                                style="margin-top:6px;"
+                            >
+                                <?= csrf_field() ?>
+                                <input type="hidden" name="invoice_id" value="<?= (int)($payment['invoice_number'] ?? 0) ?>">
+                                <input type="hidden" name="return_to" value="payments">
+                                <input type="file" name="official_receipt" accept=".pdf,.jpg,.jpeg,.png,.webp" required style="max-width:150px;font-size:12px;">
+                                <button type="submit" class="btn btn-small"><?= !empty($payment['official_receipt_path']) ? 'Replace OR' : 'Attach OR' ?></button>
+                            </form>
+                        <?php elseif ($status !== 'PENDING'): ?>
                             <span class="empty-state" style="padding:0;">-</span>
                         <?php endif; ?>
                     </td>

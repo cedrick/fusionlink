@@ -12,7 +12,11 @@
 
 <div class="form-card">
     <h2 class="form-section-title">Payment Details</h2>
-    <div class="form-help">Search the invoice, enter payment details, and upload the receipt if available.</div>
+    <div class="form-help">
+        Search the invoice, enter payment details, and upload the GCash/bank proof if you have it.
+        For customers who paid your GCash but do not use the portal, choose <strong>VERIFIED</strong> so the invoice is marked paid, the portal updates, and service restore runs in the same step.
+        Use <strong>PENDING</strong> only if you still need to check the proof, then Verify on the Payments list.
+    </div>
 
     <form method="POST" action="<?= url('/payments/store') ?>" enctype="multipart/form-data" id="paymentForm">
         <?= csrf_field() ?>
@@ -66,9 +70,8 @@
             <div class="form-group">
                 <label for="status">Status</label>
                 <select id="status" name="status" required>
-                    <option value="PENDING" selected>PENDING</option>
-                    <option value="VERIFIED">VERIFIED</option>
-                    <option value="REJECTED">REJECTED</option>
+                    <option value="VERIFIED" selected>VERIFIED (mark invoice paid now)</option>
+                    <option value="PENDING">PENDING (check later)</option>
                 </select>
             </div>
 

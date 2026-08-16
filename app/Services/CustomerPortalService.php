@@ -177,6 +177,60 @@ class CustomerPortalService
         ];
     }
 
+    public static function resetPortalPassword(PDO $pdo, int $customerId, bool $sendEmail = true): array
+    {
+        $stmt = $pdo->prepare('SELECT id, full_name, email, status FROM customers WHERE id = ? LIMIT 1');
+        $stmt->execute([$customerId]);
+        $customer = $stmt->fetch();
+
+        if (!$customer) {
+            throw new RuntimeException('Customer not found.');
+        }
+
+        $portal = self::getPortalStatus($pdo, $customerId);
+        $userId = (int)($portal['user_id'] ?? 0);
+        if (empty($portal['has_portal']) || $userId <= 0) {
+            throw new RuntimeException('This customer does not have a portal login yet. Create portal access first.');
+        }
+
+        $email = trim((string)($portal['email'] ?? ''));
+        if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            throw new RuntimeException('Portal login email is missing or invalid.');
+        }
+
+        $temporaryPassword = self::generateTemporaryPassword();
+        $passwordHash = password_hash($temporaryPassword, PASSWORD_DEFAULT);
+
+        $update = $pdo->prepare("
+            UPDATE users
+            SET password_hash = ?
+            WHERE id = ?
+              AND role = 'ROLE_CUSTOMER'
+            LIMIT 1
+        ");
+        $update->execute([$passwordHash, $userId]);
+
+        $mailSent = false;
+        if ($sendEmail && class_exists('EmailAlertService')) {
+            $loginUrl = function_exists('absolute_url') ? absolute_url('/login') : url('/login');
+            $mailSent = EmailAlertService::notifyPortalPasswordReset(
+                $pdo,
+                $customerId,
+                trim((string)($customer['full_name'] ?? 'Customer')),
+                $email,
+                $temporaryPassword,
+                $loginUrl
+            );
+        }
+
+        return [
+            'customer_name' => trim((string)($customer['full_name'] ?? 'Customer')),
+            'email' => $email,
+            'password' => $temporaryPassword,
+            'mail_sent' => $mailSent,
+        ];
+    }
+
     private static function tableExists(PDO $pdo, string $tableName): bool
     {
         $stmt = $pdo->prepare('SHOW TABLES LIKE ?');

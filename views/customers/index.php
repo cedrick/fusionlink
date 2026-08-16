@@ -31,6 +31,11 @@ function customers_page_url(int $page, string $search, string $statusFilter, str
 ?>
 
 <h1>Customers</h1>
+<p class="form-help">
+    <strong>NEW</strong> means the FusionLink account is less than 30 days old. It is not the same as
+    <strong>New activation</strong> billing (that is set on the subscription: existing = full month, never prorated).
+    VAT inclusive, static IP, and installments are on Edit. Plan and open balance are shown here.
+</p>
 
 <?php if (!empty($error)): ?>
     <div class="alert-error"><?= htmlspecialchars($error) ?></div>
@@ -117,7 +122,7 @@ function customers_page_url(int $page, string $search, string $statusFilter, str
                 id="search"
                 name="search"
                 class="toolbar-input"
-                placeholder="Name, email, phone, address"
+                placeholder="Name, email, phone, plan, billing type"
                 value="<?= htmlspecialchars($search) ?>"
             >
         </div>
@@ -139,6 +144,7 @@ function customers_page_url(int $page, string $search, string $statusFilter, str
                 <option value="full_name" <?= $sortBy === 'full_name' ? 'selected' : '' ?>>Full Name</option>
                 <option value="email" <?= $sortBy === 'email' ? 'selected' : '' ?>>Email</option>
                 <option value="phone" <?= $sortBy === 'phone' ? 'selected' : '' ?>>Phone</option>
+                <option value="plan_name" <?= $sortBy === 'plan_name' ? 'selected' : '' ?>>Plan</option>
                 <option value="created_at" <?= $sortBy === 'created_at' ? 'selected' : '' ?>>Created</option>
             </select>
         </div>
@@ -200,6 +206,10 @@ function customers_page_url(int $page, string $search, string $statusFilter, str
                         <?php endif; ?>
                     </a>
                 </th>
+                <th>Plan</th>
+                <th>Billing</th>
+                <th>VAT</th>
+                <th>Open Balance</th>
                 <th>Status</th>
                 <th>Portal</th>
                 <th>
@@ -216,7 +226,7 @@ function customers_page_url(int $page, string $search, string $statusFilter, str
         <tbody>
             <?php if (empty($customers)): ?>
                 <tr>
-                    <td colspan="8" class="empty-state">No customers found.</td>
+                    <td colspan="12" class="empty-state">No customers found.</td>
                 </tr>
             <?php else: ?>
                 <?php foreach ($customers as $c): ?>
@@ -244,6 +254,32 @@ function customers_page_url(int $page, string $search, string $statusFilter, str
                         <td><?= htmlspecialchars($c['full_name'] ?? '') ?></td>
                         <td><?= htmlspecialchars($c['email'] ?? '') ?></td>
                         <td><?= htmlspecialchars($c['phone'] ?? '') ?></td>
+                        <td>
+                            <?= htmlspecialchars((string)($c['plan_name'] ?? '') !== '' ? $c['plan_name'] : '—') ?>
+                            <?php if (!empty($c['plan_speed'])): ?>
+                                <div class="helper-text" style="margin:2px 0 0;"><?= htmlspecialchars((string)$c['plan_speed']) ?></div>
+                            <?php endif; ?>
+                        </td>
+                        <td>
+                            <?php
+                                $billingType = strtoupper((string)($c['billing_type'] ?? ''));
+                                if ($billingType === 'EXISTING_MIGRATE') {
+                                    echo 'Existing';
+                                } elseif ($billingType === 'NEW_ACTIVATION') {
+                                    echo 'New activation';
+                                } else {
+                                    echo '—';
+                                }
+                            ?>
+                        </td>
+                        <td>
+                            <?php if (!empty($c['vat_inclusive'])): ?>
+                                <span class="badge badge-info">Inclusive</span>
+                            <?php else: ?>
+                                <span class="helper-text">Excluded</span>
+                            <?php endif; ?>
+                        </td>
+                        <td>₱<?= number_format((float)($c['balance_due'] ?? 0), 2) ?></td>
                         <td>
                             <span class="badge <?= $badgeClass ?>">
                                 <?= htmlspecialchars($status !== '' ? $status : 'N/A') ?>
@@ -273,6 +309,21 @@ function customers_page_url(int $page, string $search, string $statusFilter, str
                                         onclick="return confirm('Create portal login and email credentials to <?= htmlspecialchars($customerEmail, ENT_QUOTES, 'UTF-8') ?>?')"
                                     >
                                         Portal Login
+                                    </button>
+                                </form>
+                            <?php endif; ?>
+
+                            <?php if (!empty($portal['has_portal'])): ?>
+                                <form method="POST" action="<?= url('/customers/reset-portal-password') ?>" class="inline-form">
+                                    <?= csrf_field() ?>
+                                    <input type="hidden" name="id" value="<?= $customerId ?>">
+                                    <input type="hidden" name="return_to" value="/customers">
+                                    <button
+                                        class="btn btn-small btn-secondary"
+                                        type="submit"
+                                        onclick="return confirm('Reset the portal password and email a temporary password to <?= htmlspecialchars((string)($portal['email'] ?? $customerEmail), ENT_QUOTES, 'UTF-8') ?>?')"
+                                    >
+                                        Reset Password
                                     </button>
                                 </form>
                             <?php endif; ?>
